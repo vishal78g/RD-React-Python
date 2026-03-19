@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react'
 import AccountCard from './AccountCard'
 
-function EmiCollectionScreen({ accounts, paidAccountIds, onMarkPaid }) {
+function EmiCollectionScreen({ accounts, paidAccountIds, onMarkPaidClick }) {
   const [selectedVillage, setSelectedVillage] = useState('all')
   const [selectedCycle, setSelectedCycle] = useState('all')
+  const [searchName, setSearchName] = useState('')
 
   const villages = useMemo(() => {
     const allVillages = accounts.map((account) => account.village).filter(Boolean)
@@ -14,15 +15,24 @@ function EmiCollectionScreen({ accounts, paidAccountIds, onMarkPaid }) {
     return accounts.filter((account) => {
       const villageMatch = selectedVillage === 'all' || account.village === selectedVillage
       const cycleMatch = selectedCycle === 'all' || String(account.emi_cycle) === selectedCycle
-      return villageMatch && cycleMatch
+      const nameMatch = !searchName.trim() || account.name.toLowerCase().includes(searchName.toLowerCase())
+      return villageMatch && cycleMatch && nameMatch
     })
-  }, [accounts, selectedVillage, selectedCycle])
+  }, [accounts, selectedVillage, selectedCycle, searchName])
 
   return (
     <section>
       <h2 className="screen-title">EMI Collection</h2>
 
       <div className="card filters-card">
+        <input
+          className="input"
+          type="text"
+          placeholder="Search by name..."
+          value={searchName}
+          onChange={(event) => setSearchName(event.target.value)}
+        />
+
         <label className="input-label">
           Village
           <select
@@ -61,7 +71,7 @@ function EmiCollectionScreen({ accounts, paidAccountIds, onMarkPaid }) {
             key={account.id}
             account={account}
             isPaid={paidAccountIds.has(account.id)}
-            onMarkPaid={onMarkPaid}
+            onMarkPaid={onMarkPaidClick}
           />
         ))}
       </div>

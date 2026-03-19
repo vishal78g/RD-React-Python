@@ -4,15 +4,21 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
+import certifi
 from dotenv import load_dotenv
 from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
+from supabase import create_client, Client
 
 
 load_dotenv()
+
+os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+os.environ.setdefault("CURL_CA_BUNDLE", certifi.where())
 
 
 LOGIN_URL = os.getenv("LOGIN_URL", "https://example.com/login")
@@ -41,6 +47,9 @@ ACCOUNTS_LINK_XPATH = os.getenv("ACCOUNTS_LINK_XPATH", "//*[@id='Accounts']")
 AGENT_SCREEN_XPATH = os.getenv(
     "AGENT_SCREEN_XPATH", "//*[@id='Agent Enquire & Update Screen']"
 )
+FETCH_MORE_ACCOUNTS = os.getenv(
+    "FETCH_MORE_ACCOUNTS", "//*[@id='NEXT_ACCOUNTS']"
+)
 SUMMARY_TABLE_SELECTOR = os.getenv("SUMMARY_TABLE_SELECTOR", "#SummaryList")
 PAGINATION_LABEL_XPATH = os.getenv("PAGINATION_LABEL_XPATH", "//*[@id='repeatDiv']/p/span/span[1]")
 PREV_BUTTON_XPATH = os.getenv(
@@ -50,6 +59,30 @@ NEXT_BUTTON_XPATH = os.getenv(
     "NEXT_BUTTON_XPATH", "//*[@id='Action.AgentRDActSummaryAllListing.GOTO_NEXT__']"
 )
 TOTAL_COUNT_XPATH = os.getenv("TOTAL_COUNT_XPATH", "//*[@id='repeatDiv']/h2/span[3]/span")
+
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+
+DETAIL_ACCOUNT_NUMBER_XPATH = os.getenv(
+    "DETAIL_ACCOUNT_NUMBER_XPATH", "//*[@id='HREF_CustomAgentRDAccountFG.ACCOUNT_NUMBER']"
+)
+DETAIL_NAME_XPATH = os.getenv(
+    "DETAIL_NAME_XPATH", "//*[@id='HREF_CustomAgentRDAccountFG.ACCOUNT_NICKNAME']"
+)
+DETAIL_ACCOUNT_OPENING_DATE_XPATH = os.getenv(
+    "DETAIL_ACCOUNT_OPENING_DATE_XPATH",
+    "//*[@id='HREF_CustomAgentRDAccountFG.RD_ACCOUNT_OPEN_DATE']",
+)
+DETAIL_MONTHLY_EMI_XPATH = os.getenv(
+    "DETAIL_MONTHLY_EMI_XPATH", "//*[@id='HREF_CustomAgentRDAccountFG.RD_DESPOSIT_AMOUNT']"
+)
+DETAIL_MONTH_PAID_UPTO_XPATH = os.getenv(
+    "DETAIL_MONTH_PAID_UPTO_XPATH", "//*[@id='HREF_CustomAgentRDAccountFG.MONTH_PAID_UPTO_BASIC']"
+)
+DETAIL_NEXT_EMI_DATE_XPATH = os.getenv(
+    "DETAIL_NEXT_EMI_DATE_XPATH", "//*[@id='HREF_CustomAgentRDAccountFG.NEXT_RD_INSTALLMENT_DATE']"
+)
+BACK_BUTTON_XPATH = os.getenv("BACK_BUTTON_XPATH", "//*[@id='backButton']")
 
 REPORT_DIR = Path(os.getenv("REPORT_DIR", "Report"))
 
@@ -201,6 +234,159 @@ def extract_rows_from_current_page(page: Page) -> List[Dict[str, str]]:
     return extracted
 
 
+def extract_account_numbers_from_current_page(page: Page) -> List[str]:
+    page.locator(SUMMARY_TABLE_SELECTOR).first.wait_for(state="visible", timeout=15000)
+    rows = page.locator(f"{SUMMARY_TABLE_SELECTOR} tr")
+    row_count = rows.count()
+
+    account_numbers: List[str] = []
+    for index in range(row_count):
+        row = rows.nth(index)
+        cells = row.locator("td")
+        if cells.count() < 2:
+            continue
+
+        account_number = cells.nth(1).inner_text().strip()
+        if account_number:
+            account_numbers.append(account_number)
+
+    return account_numbers
+
+
+def read_text_from_xpath(page: Page, xpath: str, timeout: int = 15000) -> str:
+    locator = page.locator(f"xpath={xpath}").first
+    locator.wait_for(state="visible", timeout=timeout)
+    return locator.inner_text().strip()
+
+
+def compute_emi_cycle(account_opening_date: str) -> str:
+    supported_formats = [
+        "%d-%m-%Y",
+        "%d/%m/%Y",
+        "%d-%m-%y",
+        "%d/%m/%y",
+        "%Y-%m-%d",
+    ]
+
+    for date_format in supported_formats:
+        try:
+            day = datetime.strptime(account_opening_date, date_format).day
+            return "15" if day <= 15 else "30"
+        except ValueError:
+            continue
+
+    match = re.search(r"\b(\d{1,2})\b", account_opening_date)
+    if match:
+        day = int(match.group(1))
+        return "15" if day <= 15 else "30"
+
+    return ""
+
+
+def parse_date_to_iso(value: str) -> Optional[str]:
+    text = (value or "").strip()
+    if not text:
+        return None
+
+    text = text.split()[0]
+
+    month_map = {
+        "jan": 1,
+        "january": 1,
+        "feb": 2,
+        "february": 2,
+        "mar": 3,
+        "march": 3,
+        "apr": 4,
+        "april": 4,
+        "may": 5,
+        "jun": 6,
+        "june": 6,
+        "jul": 7,
+        "july": 7,
+        "aug": 8,
+        "august": 8,
+        "sep": 9,
+        "sept": 9,
+        "september": 9,
+        "oct": 10,
+        "october": 10,
+        "nov": 11,
+        "november": 11,
+        "dec": 12,
+        "december": 12,
+    }
+
+    name_match = re.match(r"^(\d{1,2})[-/ ]([A-Za-z]+)[-/ ](\d{2,4})$", text)
+    if name_match:
+        day = int(name_match.group(1))
+        month_name = name_match.group(2).lower()
+        year_value = int(name_match.group(3))
+        month = month_map.get(month_name)
+        if month is not None:
+            if year_value < 100:
+                year_value += 2000
+            try:
+                return datetime(year_value, month, day).date().isoformat()
+            except ValueError:
+                return None
+
+    formats = [
+        "%d-%m-%Y",
+        "%d/%m/%Y",
+        "%d-%m-%y",
+        "%d/%m/%y",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+    ]
+
+    for date_format in formats:
+        try:
+            return datetime.strptime(text, date_format).date().isoformat()
+        except ValueError:
+            continue
+
+    return None
+
+
+def open_account_details(page: Page, account_number: str) -> None:
+    link_locator = page.locator(
+        f"{SUMMARY_TABLE_SELECTOR} a:has-text('{account_number}')"
+    ).first
+
+    link_locator.wait_for(state="visible", timeout=10000)
+    link_locator.click()
+    page.locator(f"xpath={DETAIL_ACCOUNT_NUMBER_XPATH}").first.wait_for(
+        state="visible", timeout=15000
+    )
+
+
+def capture_account_details(page: Page) -> Dict[str, str]:
+    account_number = read_text_from_xpath(page, DETAIL_ACCOUNT_NUMBER_XPATH)
+    name = read_text_from_xpath(page, DETAIL_NAME_XPATH)
+    account_opening_date = read_text_from_xpath(page, DETAIL_ACCOUNT_OPENING_DATE_XPATH)
+    monthly_emi = read_text_from_xpath(page, DETAIL_MONTHLY_EMI_XPATH)
+    month_paid_upto = read_text_from_xpath(page, DETAIL_MONTH_PAID_UPTO_XPATH)
+    next_emi_date = read_text_from_xpath(page, DETAIL_NEXT_EMI_DATE_XPATH)
+
+    return {
+        "Account Number": account_number,
+        "Name": name,
+        "Account Opening Date": account_opening_date,
+        "Monthly Emi": monthly_emi,
+        "Month Paid Upto": month_paid_upto,
+        "Next Emi Date": next_emi_date,
+        "Village": "",
+        "Mobile Number": "0",
+        "Emi Cycle": compute_emi_cycle(account_opening_date),
+    }
+
+
+def return_to_summary_from_details(page: Page) -> None:
+    page.locator(f"xpath={BACK_BUTTON_XPATH}").first.click()
+    page.locator(SUMMARY_TABLE_SELECTOR).first.wait_for(state="visible", timeout=15000)
+
+
 def can_go_next(page: Page) -> bool:
     next_button = page.locator(f"xpath={NEXT_BUTTON_XPATH}").first
     if next_button.count() == 0:
@@ -242,15 +428,76 @@ def save_to_csv(records: List[Dict[str, str]]) -> Path:
             csv_file,
             fieldnames=[
                 "Account Number",
-                "Account Name",
+                "Name",
+                "Account Opening Date",
+                "Monthly Emi",
                 "Month Paid Upto",
-                "Next RD Installment Date",
+                "Next Emi Date",
+                "Village",
+                "Mobile Number",
+                "Emi Cycle",
             ],
         )
         writer.writeheader()
         writer.writerows(records)
 
     return output_file
+
+
+def get_supabase_client() -> Client:
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        raise RuntimeError(
+            "SUPABASE_URL and SUPABASE_ANON_KEY must be set in .env file"
+        )
+    return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+
+
+def upsert_to_database(records: List[Dict[str, str]]) -> tuple[int, int]:
+    supabase = get_supabase_client()
+    inserted_count = 0
+    updated_count = 0
+
+    for record in records:
+        account_number = record["Account Number"]
+        account_opening_date = parse_date_to_iso(record.get("Account Opening Date", ""))
+        month_paid_upto_text = record.get("Month Paid Upto", "")
+        try:
+            month_paid_upto = int((month_paid_upto_text or "").strip())
+        except ValueError:
+            month_paid_upto = None
+        next_emi_date = parse_date_to_iso(record.get("Next Emi Date", ""))
+
+        existing = supabase.table("accounts").select("account_number").eq(
+            "account_number", account_number
+        ).execute()
+
+        if existing.data and len(existing.data) > 0:
+            update_data: Dict[str, object] = {}
+            if month_paid_upto is not None:
+                update_data["month_paid_upto"] = month_paid_upto
+            update_data["next_emi_date"] = next_emi_date
+            supabase.table("accounts").update(update_data).eq(
+                "account_number", account_number
+            ).execute()
+            updated_count += 1
+            print(f"Updated account {account_number}")
+        else:
+            insert_data = {
+                "account_number": account_number,
+                "name": record["Name"],
+                "village": record["Village"],
+                "phone": record["Mobile Number"],
+                "emi_amount": float(record["Monthly Emi"]),
+                "emi_cycle": int(record["Emi Cycle"]),
+                "account_opening_date": account_opening_date,
+                "month_paid_upto": month_paid_upto,
+                "next_emi_date": next_emi_date,
+            }
+            supabase.table("accounts").insert(insert_data).execute()
+            inserted_count += 1
+            print(f"Inserted account {account_number}")
+
+    return inserted_count, updated_count
 
 
 def run() -> None:
@@ -267,24 +514,39 @@ def run() -> None:
         page.wait_for_timeout(5000)
         print("Navigated to Accounts section.")
         page.locator(f"xpath={AGENT_SCREEN_XPATH}").first.click()
-        page.wait_for_timeout(10000)
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(1000)
+        page.locator(f"xpath={FETCH_MORE_ACCOUNTS}").first.click()
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(1000)
         print("Navigated to Agent Enquire & Update Screen.")
 
         total_records = extract_total_count(page)
         print(f"Total records expected: {total_records}")
 
+        
+        
         all_records: List[Dict[str, str]] = []
-        while len(all_records) < total_records:
-            current_rows = extract_rows_from_current_page(page)
+        processed_accounts = set()
 
-            for row in current_rows:
-                if len(all_records) >= total_records:
+        while len(processed_accounts) < total_records:
+            account_numbers = extract_account_numbers_from_current_page(page)
+
+            for account_number in account_numbers:
+                if len(processed_accounts) >= total_records:
                     break
-                all_records.append(row)
+                if account_number in processed_accounts:
+                    continue
 
-            print(f"Collected {len(all_records)}/{total_records}")
+                open_account_details(page, account_number)
+                account_data = capture_account_details(page)
+                all_records.append(account_data)
+                processed_accounts.add(account_data["Account Number"])
+                return_to_summary_from_details(page)
 
-            if len(all_records) >= total_records:
+                print(f"Collected {len(processed_accounts)}/{total_records}")
+
+            if len(processed_accounts) >= total_records:
                 break
 
             moved = goto_next_page(page)
@@ -292,7 +554,14 @@ def run() -> None:
                 break
 
         output_file = save_to_csv(all_records)
-        print(f"Saved {len(all_records)} records to: {output_file}")
+        print(f"Saved {len(all_records)} records to CSV: {output_file}")
+
+        print("\nPushing records to Supabase database...")
+        inserted, updated = upsert_to_database(all_records)
+        print(f"\n=== Database Stats ===")
+        print(f"Records Inserted: {inserted}")
+        print(f"Records Updated: {updated}")
+        print(f"Total Processed: {len(all_records)}")
 
         context.close()
         browser.close()
