@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.env
+Reports/
+*.csv
+README.md
+node_modules/
