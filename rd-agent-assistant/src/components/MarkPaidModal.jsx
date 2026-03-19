@@ -1,8 +1,28 @@
 import { useState } from 'react'
 
 function MarkPaidModal({ account, onConfirm, onCancel, submitting }) {
-  const [quantity, setQuantity] = useState(1)
-  const totalAmount = Number(account.emi_amount) * quantity
+  const [quantityInput, setQuantityInput] = useState('1')
+
+  const parsedQuantity = Number(quantityInput)
+  const quantity = Number.isInteger(parsedQuantity)
+    ? Math.max(1, Math.min(12, parsedQuantity))
+    : 0
+
+  const totalAmount = Number(account.emi_amount) * (quantity || 0)
+
+  function handleQuantityChange(event) {
+    const value = event.target.value
+
+    if (value === '') {
+      setQuantityInput('')
+      return
+    }
+
+    if (!/^\d+$/.test(value)) return
+
+    const numeric = Math.max(1, Math.min(12, Number(value)))
+    setQuantityInput(String(numeric))
+  }
 
   return (
     <div className="modal-overlay">
@@ -27,8 +47,8 @@ function MarkPaidModal({ account, onConfirm, onCancel, submitting }) {
               type="number"
               min="1"
               max="12"
-              value={quantity}
-              onChange={(e) => setQuantity(Math.max(1, Math.min(12, Number(e.target.value))))}
+              value={quantityInput}
+              onChange={handleQuantityChange}
             />
           </label>
 
@@ -51,7 +71,7 @@ function MarkPaidModal({ account, onConfirm, onCancel, submitting }) {
             <button
               className="btn btn-primary"
               onClick={() => onConfirm(quantity)}
-              disabled={submitting || quantity < 1}
+              disabled={submitting || !Number.isInteger(parsedQuantity) || quantity < 1}
             >
               {submitting ? 'Processing...' : 'Confirm Payment'}
             </button>

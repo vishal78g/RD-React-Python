@@ -180,17 +180,24 @@ function App() {
     setError('')
 
     try {
-      const { error: updateError } = await supabase
+      const { data: updatedRows, error: updateError } = await supabase
         .from('accounts')
         .update(pendingUpdatePayload)
         .eq('id', editingAccount.id)
+        .select('id, village, phone')
 
       if (updateError) throw updateError
+
+      if (!updatedRows || updatedRows.length === 0) {
+        throw new Error('Update blocked: no row updated in DB. Check RLS UPDATE policy for table accounts.')
+      }
+
+      const updatedRow = updatedRows[0]
 
       // Update the local state with the new payload
       setAccounts((prev) =>
         prev.map((acc) =>
-          acc.id === editingAccount.id ? { ...acc, ...pendingUpdatePayload } : acc
+          acc.id === editingAccount.id ? { ...acc, village: updatedRow.village, phone: updatedRow.phone } : acc
         )
       )
       setEditingAccount(null)
