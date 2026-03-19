@@ -358,6 +358,18 @@ body {
   padding: 20px;
 }
 
+.login-wrapper {
+  min-height: calc(100vh - 32px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 420px;
+}
+
 .error-text {
   margin-top: 12px;
   padding: 12px;

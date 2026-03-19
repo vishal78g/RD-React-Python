@@ -9,7 +9,11 @@ import UndoPaymentModal from './components/UndoPaymentModal'
 import MonthlyPaymentsScreen from './components/MonthlyPaymentsScreen'
 import MarkPaidModal from './components/MarkPaidModal'
 import PaymentConfirmationModal from './components/PaymentConfirmationModal'
+import LoginScreen from './components/LoginScreen'
 import { supabase } from './lib/supabase'
+
+const AUTH_STORAGE_KEY = 'rd_agent_auth'
+const ONE_DAY_MS = 24 * 60 * 60 * 1000
 
 const screens = [
   { key: 'dashboard', label: 'Dashboard' },
@@ -18,7 +22,11 @@ const screens = [
 ]
 
 function App() {
+  const configuredPin = import.meta.env.VITE_APP_PIN || '1234'
   const [activeScreen, setActiveScreen] = useState('dashboard')
+  const [authLoading, setAuthLoading] = useState(true)
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [authError, setAuthError] = useState('')
   const [showAccountsList, setShowAccountsList] = useState(false)
   const [showMonthlyPayments, setShowMonthlyPayments] = useState(false)
   const [editingAccount, setEditingAccount] = useState(null)
@@ -34,7 +42,7 @@ function App() {
   const [accounts, setAccounts] = useState([])
   const [currentMonthCollections, setCurrentMonthCollections] = useState([])
   const [todayPayments, setTodayPayments] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
@@ -61,8 +69,48 @@ function App() {
   }, [accounts, todayPayments, currentMonthCollections])
 
   useEffect(() => {
-    loadInitialData()
+    try {
+      const raw = localStorage.getItem(AUTH_STORAGE_KEY)
+      if (!raw) {
+        setAuthLoading(false)
+        return
+      }
+
+      const parsed = JSON.parse(raw)
+      if (parsed?.expiresAt && parsed.expiresAt > Date.now()) {
+        setIsAuthenticated(true)
+      } else {
+        localStorage.removeItem(AUTH_STORAGE_KEY)
+      }
+    } catch {
+      localStorage.removeItem(AUTH_STORAGE_KEY)
+    } finally {
+      setAuthLoading(false)
+    }
   }, [])
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      loadInitialData()
+    }
+  }, [isAuthenticated])
+
+  function handleLogin(pin) {
+    setAuthError('')
+
+    if (pin !== configuredPin) {
+      setAuthError('Invalid PIN')
+      return
+    }
+
+    const authState = {
+      expiresAt: Date.now() + ONE_DAY_MS
+    }
+
+    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authState))
+    setIsAuthenticated(true)
+    setActiveScreen('dashboard')
+  }
 
   async function loadInitialData() {
     setLoading(true)
@@ -417,6 +465,26 @@ function App() {
         reportMonthlyLoading={reportMonthlyLoading}
         onFetchMonthlyPayments={fetchReportMonthlyPayments}
       />
+    )
+  }
+
+  if (authLoading) {
+    return (
+      <div className="app-shell">
+        <main className="app-main">
+          <p className="state-text">Checking login...</p>
+        </main>
+      </div>
+    )
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className="app-shell">
+        <main className="app-main">
+          <LoginScreen onLogin={handleLogin} authError={authError} />
+        </main>
+      </div>
     )
   }
 
