@@ -1,10 +1,13 @@
 import csv
 import os
 import re
+import sys
 import time
+import tkinter as tk
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
+from tkinter import ttk
 
 import certifi
 from dotenv import load_dotenv
@@ -14,7 +17,14 @@ from playwright.sync_api import sync_playwright
 from supabase import create_client, Client
 
 
-load_dotenv()
+def get_runtime_base_path() -> Path:
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent
+
+
+BASE_DIR = get_runtime_base_path()
+load_dotenv(BASE_DIR / ".env")
 
 os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
@@ -85,6 +95,82 @@ DETAIL_NEXT_EMI_DATE_XPATH = os.getenv(
 BACK_BUTTON_XPATH = os.getenv("BACK_BUTTON_XPATH", "//*[@id='backButton']")
 
 REPORT_DIR = Path(os.getenv("REPORT_DIR", "Report"))
+
+
+class ExtractionProgressWindow:
+    def __init__(self) -> None:
+        self.enabled = False
+        self.value = 0
+        try:
+            self.root = tk.Tk()
+            self.root.title("RD Extract Progress")
+            self.root.geometry("520x140")
+            self.root.resizable(False, False)
+
+            frame = ttk.Frame(self.root, padding=16)
+            frame.pack(fill="both", expand=True)
+
+            self.status_var = tk.StringVar(value="Starting...")
+            ttk.Label(frame, textvariable=self.status_var).pack(anchor="w")
+
+            self.progress_var = tk.DoubleVar(value=0)
+            self.progress_bar = ttk.Progressbar(
+                frame,
+                orient="horizontal",
+                mode="determinate",
+                maximum=100,
+                variable=self.progress_var,
+                length=480,
+            )
+            self.progress_bar.pack(pady=12)
+
+            self.percent_var = tk.StringVar(value="0%")
+            ttk.Label(frame, textvariable=self.percent_var).pack(anchor="e")
+
+            self.enabled = True
+            self._refresh()
+        except Exception:
+            self.enabled = False
+
+    def _refresh(self) -> None:
+        if not self.enabled:
+            return
+        self.root.update_idletasks()
+        self.root.update()
+
+    def set_status(self, text: str) -> None:
+        if not self.enabled:
+            return
+        self.status_var.set(text)
+        self._refresh()
+
+    def set_total(self, total: int) -> None:
+        if not self.enabled:
+            return
+        max_value = max(total, 1)
+        self.progress_bar.configure(maximum=max_value)
+        self.progress_var.set(0)
+        self.percent_var.set("0%")
+        self.value = 0
+        self._refresh()
+
+    def advance(self, step: int = 1) -> None:
+        if not self.enabled:
+            return
+        self.value += step
+        self.progress_var.set(self.value)
+        maximum = float(self.progress_bar.cget("maximum"))
+        percent = int((self.value / maximum) * 100) if maximum else 0
+        self.percent_var.set(f"{min(percent, 100)}%")
+        self._refresh()
+
+    def close(self) -> None:
+        if not self.enabled:
+            return
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
 
 
 def wait_for_captcha_length(page: Page) -> bool:
@@ -501,70 +587,83 @@ def upsert_to_database(records: List[Dict[str, str]]) -> tuple[int, int]:
 
 
 def run() -> None:
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=HEADLESS, slow_mo=SLOW_MO_MS)
-        context = browser.new_context()
-        page = context.new_page()
-        page.set_default_timeout(TIMEOUT_MS)
+    progress_window = ExtractionProgressWindow()
+    progress_window.set_status("Launching browser...")
 
-        login_with_retry(page)
-        page.wait_for_timeout(5000)
-        print("Logged in successfully.")
-        page.locator(f"xpath={ACCOUNTS_LINK_XPATH}").first.click()
-        page.wait_for_timeout(5000)
-        print("Navigated to Accounts section.")
-        page.locator(f"xpath={AGENT_SCREEN_XPATH}").first.click()
-        page.wait_for_load_state("networkidle")
-        page.wait_for_timeout(1000)
-        page.locator(f"xpath={FETCH_MORE_ACCOUNTS}").first.click()
-        page.wait_for_load_state("networkidle")
-        page.wait_for_timeout(1000)
-        print("Navigated to Agent Enquire & Update Screen.")
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=HEADLESS, slow_mo=SLOW_MO_MS)
+            context = browser.new_context()
+            page = context.new_page()
+            page.set_default_timeout(TIMEOUT_MS)
 
-        total_records = extract_total_count(page)
-        print(f"Total records expected: {total_records}")
+            progress_window.set_status("Waiting for login and CAPTCHA...")
+            login_with_retry(page)
+            page.wait_for_timeout(5000)
+            print("Logged in successfully.")
+            page.locator(f"xpath={ACCOUNTS_LINK_XPATH}").first.click()
+            page.wait_for_timeout(5000)
+            print("Navigated to Accounts section.")
+            page.locator(f"xpath={AGENT_SCREEN_XPATH}").first.click()
+            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(1000)
+            page.locator(f"xpath={FETCH_MORE_ACCOUNTS}").first.click()
+            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(1000)
+            print("Navigated to Agent Enquire & Update Screen.")
 
-        
-        
-        all_records: List[Dict[str, str]] = []
-        processed_accounts = set()
+            total_records = extract_total_count(page)
+            print(f"Total records expected: {total_records}")
 
-        while len(processed_accounts) < total_records:
-            account_numbers = extract_account_numbers_from_current_page(page)
+            all_records: List[Dict[str, str]] = []
+            processed_accounts = set()
+            progress_window.set_total(total_records)
+            progress_window.set_status("Extracting account details...")
 
-            for account_number in account_numbers:
+            while len(processed_accounts) < total_records:
+                account_numbers = extract_account_numbers_from_current_page(page)
+
+                for account_number in account_numbers:
+                    if len(processed_accounts) >= total_records:
+                        break
+                    if account_number in processed_accounts:
+                        continue
+
+                    open_account_details(page, account_number)
+                    account_data = capture_account_details(page)
+                    all_records.append(account_data)
+                    processed_accounts.add(account_data["Account Number"])
+                    return_to_summary_from_details(page)
+
+                    progress_window.advance(1)
+                    progress_window.set_status(
+                        f"Extracting account details... {len(processed_accounts)}/{total_records}"
+                    )
+
                 if len(processed_accounts) >= total_records:
                     break
-                if account_number in processed_accounts:
-                    continue
 
-                open_account_details(page, account_number)
-                account_data = capture_account_details(page)
-                all_records.append(account_data)
-                processed_accounts.add(account_data["Account Number"])
-                return_to_summary_from_details(page)
+                moved = goto_next_page(page)
+                if not moved:
+                    break
 
-                print(f"Collected {len(processed_accounts)}/{total_records}")
+            progress_window.set_status("Saving CSV file...")
+            output_file = save_to_csv(all_records)
+            print(f"Saved {len(all_records)} records to CSV: {output_file}")
 
-            if len(processed_accounts) >= total_records:
-                break
+            progress_window.set_status("Updating database...")
+            print("\nPushing records to Supabase database...")
+            inserted, updated = upsert_to_database(all_records)
+            print(f"\n=== Database Stats ===")
+            print(f"Records Inserted: {inserted}")
+            print(f"Records Updated: {updated}")
+            print(f"Total Processed: {len(all_records)}")
 
-            moved = goto_next_page(page)
-            if not moved:
-                break
-
-        output_file = save_to_csv(all_records)
-        print(f"Saved {len(all_records)} records to CSV: {output_file}")
-
-        print("\nPushing records to Supabase database...")
-        inserted, updated = upsert_to_database(all_records)
-        print(f"\n=== Database Stats ===")
-        print(f"Records Inserted: {inserted}")
-        print(f"Records Updated: {updated}")
-        print(f"Total Processed: {len(all_records)}")
-
-        context.close()
-        browser.close()
+            progress_window.set_status("Completed successfully.")
+            context.close()
+            browser.close()
+    finally:
+        progress_window.close()
 
 
 if __name__ == "__main__":
