@@ -26,6 +26,11 @@ def get_runtime_base_path() -> Path:
 BASE_DIR = get_runtime_base_path()
 load_dotenv(BASE_DIR / ".env")
 
+if getattr(sys, "frozen", False):
+    _ms_playwright = Path(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright"
+    if _ms_playwright.exists():
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_ms_playwright)
+
 os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
 os.environ.setdefault("CURL_CA_BUNDLE", certifi.where())
