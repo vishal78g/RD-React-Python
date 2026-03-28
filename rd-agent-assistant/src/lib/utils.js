@@ -172,3 +172,77 @@ export function getEmiStatus(nextEmiDate) {
 
   return { status: 'UNKNOWN', count: 0 }
 }
+
+/**
+ * Calculate how many EMI months are currently outstanding.
+ * For pending accounts, this includes the current month if it is not yet paid.
+ */
+export function getOutstandingEmiMonths(nextEmiDate, isPaidThisMonth = false) {
+  const { status, count } = getEmiStatus(nextEmiDate)
+
+  if (status === 'PENDING') {
+    return count + (isPaidThisMonth ? 0 : 1)
+  }
+
+  if (status === 'REGULAR') {
+    return isPaidThisMonth ? 0 : 1
+  }
+
+  return 0
+}
+
+/**
+ * Calculate overdue charge based on pending months before the current month.
+ * Example for EMI 500: 1 month = 5, 2 months = 15, 3 months = 30.
+ */
+export function calculateEmiDueAmount(emiAmount, nextEmiDate) {
+  const normalizedEmiAmount = Number(emiAmount || 0)
+  const { status, count } = getEmiStatus(nextEmiDate)
+
+  if (normalizedEmiAmount <= 0 || status !== 'PENDING' || count <= 0) {
+    return 0
+  }
+
+  const monthlyDueStep = normalizedEmiAmount * 0.01
+  const dueAmount = monthlyDueStep * (count * (count + 1)) / 2
+
+  return Number(dueAmount.toFixed(2))
+}
+
+/**
+ * Build payment totals for EMI collection.
+ */
+export function getPaymentTotals({ emiAmount, nextEmiDate, quantity }) {
+  const normalizedEmiAmount = Number(emiAmount || 0)
+  const normalizedQuantity = Number(quantity || 0)
+  const baseAmount = normalizedEmiAmount * normalizedQuantity
+  const dueAmount = calculateEmiDueAmount(normalizedEmiAmount, nextEmiDate)
+  const totalAmount = baseAmount + dueAmount
+
+  return {
+    baseAmount: Number(baseAmount.toFixed(2)),
+    dueAmount,
+    totalAmount: Number(totalAmount.toFixed(2))
+  }
+}
+
+/**
+ * Derive payment breakdown from a stored collection row.
+ */
+export function getPaymentBreakdown(payment) {
+  const emiAmount = Number(payment?.accounts?.emi_amount || payment?.emi_amount || 0)
+  const emisPaid = Number(payment?.emis_paid || 0)
+  const totalAmount = Number(payment?.amount || 0)
+  const baseAmount = Number((emiAmount * emisPaid).toFixed(2))
+  const storedDueAmount = Number(Math.max(0, totalAmount - baseAmount).toFixed(2))
+  const fallbackDueAmount = calculateEmiDueAmount(emiAmount, payment?.accounts?.next_emi_date)
+  const dueAmount = storedDueAmount > 0 ? storedDueAmount : fallbackDueAmount
+
+  return {
+    emiAmount,
+    emisPaid,
+    baseAmount,
+    dueAmount,
+    totalAmount
+  }
+}

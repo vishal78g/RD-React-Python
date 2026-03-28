@@ -1,11 +1,15 @@
 import { useMemo } from 'react'
-import { formatDateLong } from '../lib/utils'
+import { formatDateLong, getPaymentBreakdown } from '../lib/utils'
 
 function MonthlyPaymentsScreen({ payments, month, year, onClose }) {
   const monthName = new Date(year, month - 1, 1).toLocaleString('en-US', { month: 'long' })
 
   const totalCollected = useMemo(
     () => payments.reduce((sum, p) => sum + Number(p.amount || 0), 0),
+    [payments]
+  )
+  const totalDueCollected = useMemo(
+    () => payments.reduce((sum, payment) => sum + getPaymentBreakdown(payment).dueAmount, 0),
     [payments]
   )
 
@@ -23,6 +27,7 @@ function MonthlyPaymentsScreen({ payments, month, year, onClose }) {
       <article className="metric-card total-card">
         <p className="metric-label">Total Collected This Month</p>
         <h3 className="metric-value">₹ {totalCollected.toFixed(2)}</h3>
+        <p className="metric-note">Due ₹ {totalDueCollected.toFixed(2)}</p>
       </article>
 
       {payments.length === 0 ? (
@@ -43,6 +48,10 @@ function MonthlyPaymentsScreen({ payments, month, year, onClose }) {
               <div className="detail-row">
                 <span className="label">Payment Date:</span>
                 <span>{formatDateLong(payment.payment_date)}</span>
+              </div>
+              <div className="detail-row">
+                <span className="label">Due Amount:</span>
+                <span>₹ {getPaymentBreakdown(payment).dueAmount.toFixed(2)}</span>
               </div>
               <p className="amount">₹ {Number(payment.amount).toFixed(2)}</p>
             </article>

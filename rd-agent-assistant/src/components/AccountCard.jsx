@@ -1,6 +1,6 @@
 import { getEmiStatus } from '../lib/utils'
 
-function AccountCard({ account, isPaid, onMarkPaid }) {
+function AccountCard({ account, isPaid, onMarkPaid, onCall }) {
   const emiStatus = getEmiStatus(account.next_emi_date)
 
   const statusTagClass = emiStatus.status === 'PENDING' ? 'pending' : emiStatus.status === 'ADVANCE' ? 'advance' : 'regular'
@@ -26,11 +26,9 @@ function AccountCard({ account, isPaid, onMarkPaid }) {
       </div>
 
       <div className="account-actions">
-        {account.phone && account.phone !== '0' ? (
-          <a className="btn btn-secondary" href={`tel:${account.phone}`}>
-            Call
-          </a>
-        ) : null}
+        <button className="btn btn-secondary" onClick={() => onCall(account)}>
+          Call
+        </button>
 
         <button className="btn btn-primary" onClick={() => onMarkPaid(account)} disabled={isPaid}>
           {isPaid ? 'Already Paid' : 'Mark Paid'}

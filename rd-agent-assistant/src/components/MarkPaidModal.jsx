@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { getEmiStatus, getPaymentTotals } from '../lib/utils'
 
 function MarkPaidModal({ account, onConfirm, onCancel, submitting }) {
   const [quantityInput, setQuantityInput] = useState('1')
@@ -8,7 +9,12 @@ function MarkPaidModal({ account, onConfirm, onCancel, submitting }) {
     ? Math.max(1, Math.min(12, parsedQuantity))
     : 0
 
-  const totalAmount = Number(account.emi_amount) * (quantity || 0)
+  const emiStatus = getEmiStatus(account.next_emi_date)
+  const { baseAmount, dueAmount, totalAmount } = getPaymentTotals({
+    emiAmount: account.emi_amount,
+    nextEmiDate: account.next_emi_date,
+    quantity
+  })
 
   function handleQuantityChange(event) {
     const value = event.target.value
@@ -39,6 +45,9 @@ function MarkPaidModal({ account, onConfirm, onCancel, submitting }) {
           <p>
             <strong>EMI Amount:</strong> ₹ {Number(account.emi_amount).toFixed(2)}
           </p>
+          <p>
+            <strong>Pending Months:</strong> {emiStatus.status === 'PENDING' ? emiStatus.count : 0}
+          </p>
 
           <label className="input-label">
             Number of EMIs to Mark as Paid
@@ -60,6 +69,14 @@ function MarkPaidModal({ account, onConfirm, onCancel, submitting }) {
             <div className="summary-row">
               <span>Number of EMIs:</span>
               <span>{quantity}</span>
+            </div>
+            <div className="summary-row">
+              <span>EMI Total:</span>
+              <span>₹ {baseAmount.toFixed(2)}</span>
+            </div>
+            <div className="summary-row">
+              <span>Due Amount:</span>
+              <span>₹ {dueAmount.toFixed(2)}</span>
             </div>
             <div className="summary-row total">
               <span>Total Amount:</span>

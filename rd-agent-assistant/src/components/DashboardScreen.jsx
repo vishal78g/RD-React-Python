@@ -1,9 +1,36 @@
-function DashboardScreen({ totalAccounts, totalEmiDue, totalCollectedToday, totalCollectedThisMonth, onViewAccounts, onViewMonthlyPayments }) {
+function DashboardScreen({
+  totalAccounts,
+  totalAmountPaidTillNow,
+  totalEmiDue,
+  totalCollectedToday,
+  totalCollectedTodayDue,
+  totalCollectedThisMonth,
+  totalCollectedThisMonthDue,
+  onViewAccounts,
+  onViewMonthlyPayments,
+  onViewEmiDueList
+}) {
+  const formatCurrency = (amount) =>
+    new Intl.NumberFormat('en-IN', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(Number(amount || 0))
+
   const cards = [
     { label: 'Total Accounts', value: totalAccounts, action: onViewAccounts },
-    { label: 'Total EMI Due', value: `₹ ${totalEmiDue.toFixed(2)}` },
-    { label: 'Collected Today', value: `₹ ${totalCollectedToday.toFixed(2)}` },
-    { label: 'Collected This Month', value: `₹ ${totalCollectedThisMonth.toFixed(2)}`, action: onViewMonthlyPayments }
+    { label: 'Total Amount Paid Till Now', value: `₹ ${formatCurrency(totalAmountPaidTillNow)}` },
+    { label: 'Total EMI Due', value: `₹ ${formatCurrency(totalEmiDue)}`, action: onViewEmiDueList },
+    {
+      label: 'Collected This Month',
+      value: `₹ ${formatCurrency(totalCollectedThisMonth)}`,
+      note: `Due ₹ ${formatCurrency(totalCollectedThisMonthDue)}`,
+      action: onViewMonthlyPayments
+    },
+    {
+      label: 'Collected Today',
+      value: `₹ ${formatCurrency(totalCollectedToday)}`,
+      note: `Due ₹ ${formatCurrency(totalCollectedTodayDue)}`
+    }
   ]
 
   return (
@@ -20,6 +47,7 @@ function DashboardScreen({ totalAccounts, totalEmiDue, totalCollectedToday, tota
           >
             <p className="metric-label">{card.label}</p>
             <h3 className="metric-value">{card.value}</h3>
+            {card.note ? <p className="metric-note">{card.note}</p> : null}
           </article>
         ))}
       </div>

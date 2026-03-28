@@ -1,8 +1,9 @@
-import { useState, useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { formatDateLong } from '../lib/utils'
 
-function AccountsListScreen({ accounts, onEdit, onDelete, onClose }) {
+function AccountsListScreen({ accounts, focusedAccountId, onEdit, onDelete, onClose }) {
   const [searchName, setSearchName] = useState('')
+  const accountRefs = useRef(new Map())
 
   const filteredAccounts = useMemo(() => {
     if (!searchName.trim()) {
@@ -12,6 +13,15 @@ function AccountsListScreen({ accounts, onEdit, onDelete, onClose }) {
       account.name.toLowerCase().includes(searchName.toLowerCase())
     )
   }, [accounts, searchName])
+
+  useEffect(() => {
+    if (!focusedAccountId) return
+
+    const target = accountRefs.current.get(focusedAccountId)
+    if (!target) return
+
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [filteredAccounts, focusedAccountId])
 
   return (
     <section>
@@ -37,7 +47,17 @@ function AccountsListScreen({ accounts, onEdit, onDelete, onClose }) {
       ) : (
         <div className="list-stack">
           {filteredAccounts.map((account) => (
-            <article className="card account-detail-card" key={account.id}>
+            <article
+              className={`card account-detail-card ${focusedAccountId === account.id ? 'account-detail-card-focused' : ''}`}
+              key={account.id}
+              ref={(element) => {
+                if (element) {
+                  accountRefs.current.set(account.id, element)
+                } else {
+                  accountRefs.current.delete(account.id)
+                }
+              }}
+            >
               <div className="account-header">
                 <div>
                   <p className="account-number">{account.account_number}</p>

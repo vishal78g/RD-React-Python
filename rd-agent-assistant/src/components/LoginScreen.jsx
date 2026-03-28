@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import rdLogo from '../public/images/rdLogo.png'
 
 function LoginScreen({ onLogin, authError }) {
   const [pin, setPin] = useState('')
@@ -16,6 +17,7 @@ function LoginScreen({ onLogin, authError }) {
   return (
     <div className="login-wrapper">
       <article className="card login-card">
+        <img src={rdLogo} alt="RD Agent logo" className="login-logo" />
         <h2 className="screen-title">RD Agent Assistant</h2>
         <p className="muted">Enter 4-digit PIN to continue</p>
 

@@ -16,7 +16,7 @@ function UndoPaymentModal({ accountName, paymentAmount, emisPaid, onConfirm, onC
             </p>
           )}
         </div>
-        <p className="warning-text">This will remove the payment from today's report.</p>
+        <p className="warning-text">This will permanently remove the payment record.</p>
         <div className="modal-actions">
           <button className="btn btn-danger" onClick={onConfirm}>
             Yes, Undo

@@ -10,7 +10,21 @@ import MonthlyPaymentsScreen from './components/MonthlyPaymentsScreen'
 import MarkPaidModal from './components/MarkPaidModal'
 import PaymentConfirmationModal from './components/PaymentConfirmationModal'
 import LoginScreen from './components/LoginScreen'
+import EmiDueListScreen from './components/EmiDueListScreen'
+import SummaryScreen from './components/SummaryScreen'
 import { supabase } from './lib/supabase'
+import { getOutstandingEmiMonths, getPaymentBreakdown, getPaymentTotals } from './lib/utils'
+import rdLogo from './public/images/rdLogo.png'
+
+async function cacheImageInBrowser(imageUrl) {
+  if (!imageUrl || typeof window === 'undefined' || !('caches' in window)) return
+
+  const cache = await window.caches.open('rd-agent-static-v1')
+  const alreadyCached = await cache.match(imageUrl)
+  if (!alreadyCached) {
+    await cache.add(imageUrl)
+  }
+}
 
 const AUTH_STORAGE_KEY = 'rd_agent_auth'
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
@@ -18,7 +32,8 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000
 const screens = [
   { key: 'dashboard', label: 'Dashboard' },
   { key: 'emi', label: 'EMI' },
-  { key: 'report', label: 'Report' }
+  { key: 'report', label: 'Report' },
+  { key: 'summary', label: 'Summary' }
 ]
 
 function App() {
@@ -29,6 +44,8 @@ function App() {
   const [authError, setAuthError] = useState('')
   const [showAccountsList, setShowAccountsList] = useState(false)
   const [showMonthlyPayments, setShowMonthlyPayments] = useState(false)
+  const [showEmiDueList, setShowEmiDueList] = useState(false)
+  const [focusedAccountId, setFocusedAccountId] = useState(null)
   const [editingAccount, setEditingAccount] = useState(null)
   const [showEditModal, setShowEditModal] = useState(false)
   const [showUpdateConfirm, setShowUpdateConfirm] = useState(false)
@@ -39,6 +56,7 @@ function App() {
   const [undoPaymentGroup, setUndoPaymentGroup] = useState(null)
   const [reportMonthlyPayments, setReportMonthlyPayments] = useState(null)
   const [reportMonthlyLoading, setReportMonthlyLoading] = useState(false)
+  const [allCollections, setAllCollections] = useState([])
   const [accounts, setAccounts] = useState([])
   const [currentMonthCollections, setCurrentMonthCollections] = useState([])
   const [todayPayments, setTodayPayments] = useState([])
@@ -58,15 +76,50 @@ function App() {
 
   const dashboardData = useMemo(() => {
     const totalAccounts = accounts.length
-    const totalEmiDue = accounts.reduce((sum, account) => sum + Number(account.emi_amount || 0), 0)
+    const totalAmountPaidTillNow = accounts.reduce(
+      (sum, account) => sum + Number(account.emi_amount || 0) * Number(account.month_paid_upto || 0),
+      0
+    )
+
+    const totalEmiDue = accounts.reduce((sum, account) => {
+      const emiAmount = Number(account.emi_amount || 0)
+      const paidThisMonth = paidAccountIds.has(account.id)
+
+      const monthsDue = getOutstandingEmiMonths(account.next_emi_date, paidThisMonth)
+
+      return sum + emiAmount * monthsDue
+    }, 0)
+
     const totalCollectedToday = todayPayments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
+    const totalCollectedTodayDue = todayPayments.reduce(
+      (sum, payment) => sum + getPaymentBreakdown(payment).dueAmount,
+      0
+    )
     const totalCollectedThisMonth = currentMonthCollections.reduce(
       (sum, payment) => sum + Number(payment.amount || 0),
       0
     )
+    const totalCollectedThisMonthDue = currentMonthCollections.reduce(
+      (sum, payment) => sum + getPaymentBreakdown(payment).dueAmount,
+      0
+    )
 
-    return { totalAccounts, totalEmiDue, totalCollectedToday, totalCollectedThisMonth }
-  }, [accounts, todayPayments, currentMonthCollections])
+    return {
+      totalAccounts,
+      totalAmountPaidTillNow,
+      totalEmiDue,
+      totalCollectedToday,
+      totalCollectedTodayDue,
+      totalCollectedThisMonth,
+      totalCollectedThisMonthDue
+    }
+  }, [accounts, todayPayments, currentMonthCollections, paidAccountIds])
+
+  useEffect(() => {
+    cacheImageInBrowser(rdLogo).catch(() => {
+      // Best-effort cache warmup only.
+    })
+  }, [])
 
   useEffect(() => {
     try {
@@ -117,27 +170,33 @@ function App() {
     setError('')
 
     try {
-      const [accountsRes, monthRes, todayRes] = await Promise.all([
+      const [accountsRes, monthRes, todayRes, allCollectionsRes] = await Promise.all([
         supabase.from('accounts').select('*').order('created_at', { ascending: false }),
         supabase
           .from('emi_collections')
-          .select('id, account_id, amount, emis_paid, payment_date, month, year, accounts(name, village)')
+          .select('id, account_id, amount, emis_paid, payment_date, month, year, accounts(name, village, emi_amount, next_emi_date)')
           .eq('month', currentMonth)
           .eq('year', currentYear)
           .order('payment_date', { ascending: false }),
         supabase
           .from('emi_collections')
-          .select('id, account_id, amount, emis_paid, payment_date, accounts(name, village, phone)')
-          .eq('payment_date', todayIso)
+          .select('id, account_id, amount, emis_paid, payment_date, accounts(name, village, phone, emi_amount, next_emi_date)')
+          .eq('payment_date', todayIso),
+        supabase
+          .from('emi_collections')
+          .select('id, account_id, amount, emis_paid, payment_date, month, year, accounts(name, village, phone, emi_amount, next_emi_date)')
+          .order('payment_date', { ascending: false })
       ])
 
       if (accountsRes.error) throw accountsRes.error
       if (monthRes.error) throw monthRes.error
       if (todayRes.error) throw todayRes.error
+      if (allCollectionsRes.error) throw allCollectionsRes.error
 
       setAccounts(accountsRes.data || [])
       setCurrentMonthCollections(monthRes.data || [])
       setTodayPayments(todayRes.data || [])
+      setAllCollections(allCollectionsRes.data || [])
     } catch (loadError) {
       setError(loadError.message || 'Failed to load data.')
     } finally {
@@ -200,11 +259,11 @@ function App() {
           acc.id === editingAccount.id ? { ...acc, village: updatedRow.village, phone: updatedRow.phone } : acc
         )
       )
+      setFocusedAccountId(editingAccount.id)
       setEditingAccount(null)
       setShowEditModal(false)
       setShowUpdateConfirm(false)
       setPendingUpdatePayload(null)
-      setShowAccountsList(false)
     } catch (updateError) {
       setError(updateError.message || 'Could not update account.')
     } finally {
@@ -249,8 +308,11 @@ function App() {
     setError('')
 
     try {
-      const emiAmount = Number(markPaidAccount.emi_amount)
-      const totalAmount = emiAmount * quantity
+      const { dueAmount, totalAmount } = getPaymentTotals({
+        emiAmount: markPaidAccount.emi_amount,
+        nextEmiDate: markPaidAccount.next_emi_date,
+        quantity
+      })
 
       // Insert ONE record with emis_paid count and total amount
       const { error: insertError } = await supabase
@@ -270,13 +332,13 @@ function App() {
       const [monthRes, todayRes] = await Promise.all([
         supabase
           .from('emi_collections')
-          .select('id, account_id, amount, emis_paid, payment_date, month, year, accounts(name, village)')
+          .select('id, account_id, amount, emis_paid, payment_date, month, year, accounts(name, village, emi_amount, next_emi_date)')
           .eq('month', currentMonth)
           .eq('year', currentYear)
           .order('payment_date', { ascending: false }),
         supabase
           .from('emi_collections')
-          .select('id, account_id, amount, emis_paid, payment_date, accounts(name, village, phone)')
+          .select('id, account_id, amount, emis_paid, payment_date, accounts(name, village, phone, emi_amount, next_emi_date)')
           .eq('payment_date', todayIso)
       ])
 
@@ -290,7 +352,8 @@ function App() {
       setLastPaymentConfirm({
         account: markPaidAccount,
         quantity,
-        totalAmount: emiAmount * quantity
+        dueAmount,
+        totalAmount
       })
       setMarkPaidAccount(null)
     } catch (paymentError) {
@@ -369,7 +432,7 @@ function App() {
     try {
       const { data, error: fetchError } = await supabase
         .from('emi_collections')
-        .select('id, account_id, amount, emis_paid, payment_date, month, year, accounts(name, village)')
+        .select('id, account_id, amount, emis_paid, payment_date, month, year, accounts(name, village, emi_amount, next_emi_date)')
         .eq('month', month)
         .eq('year', year)
         .order('payment_date', { ascending: false })
@@ -383,6 +446,7 @@ function App() {
   }
 
   function handleStartEdit(account) {
+    setFocusedAccountId(account.id)
     setEditingAccount(account)
     setShowEditModal(true)
   }
@@ -403,6 +467,7 @@ function App() {
   }
 
   function handleViewAccounts() {
+    setFocusedAccountId(null)
     setShowAccountsList(true)
   }
 
@@ -418,6 +483,14 @@ function App() {
     setShowMonthlyPayments(false)
   }
 
+  function handleViewEmiDueList() {
+    setShowEmiDueList(true)
+  }
+
+  function handleCloseEmiDueList() {
+    setShowEmiDueList(false)
+  }
+
   function renderScreen() {
     if (showMonthlyPayments) {
       return (
@@ -430,10 +503,21 @@ function App() {
       )
     }
 
+    if (showEmiDueList) {
+      return (
+        <EmiDueListScreen
+          accounts={accounts}
+          paidAccountIds={paidAccountIds}
+          onClose={handleCloseEmiDueList}
+        />
+      )
+    }
+
     if (showAccountsList) {
       return (
         <AccountsListScreen
           accounts={accounts}
+          focusedAccountId={focusedAccountId}
           onEdit={handleStartEdit}
           onDelete={handleStartDelete}
           onClose={handleCloseAccountsList}
@@ -447,6 +531,7 @@ function App() {
           {...dashboardData}
           onViewAccounts={handleViewAccounts}
           onViewMonthlyPayments={handleViewMonthlyPayments}
+          onViewEmiDueList={handleViewEmiDueList}
         />
       )
     }
@@ -457,6 +542,18 @@ function App() {
           accounts={accounts}
           paidAccountIds={paidAccountIds}
           onMarkPaidClick={handleMarkPaidClick}
+        />
+      )
+    }
+
+    if (activeScreen === 'summary') {
+      return (
+        <SummaryScreen
+          accounts={accounts}
+          currentMonthCollections={currentMonthCollections}
+          todayPayments={todayPayments}
+          allCollections={allCollections}
+          paidAccountIds={paidAccountIds}
         />
       )
     }
@@ -498,7 +595,10 @@ function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <h1>RD Agent Assistant</h1>
+        <div className="app-title-row">
+          <h1>RD Agent Assistant</h1>
+          <img src={rdLogo} alt="RD Agent logo" className="header-logo" />
+        </div>
       </header>
 
       <main className="app-main">
@@ -538,6 +638,7 @@ function App() {
         <PaymentConfirmationModal
           account={lastPaymentConfirm.account}
           quantity={lastPaymentConfirm.quantity}
+          dueAmount={lastPaymentConfirm.dueAmount}
           totalAmount={lastPaymentConfirm.totalAmount}
           onClose={handleClosePaymentConfirm}
         />
@@ -553,7 +654,7 @@ function App() {
         />
       )}
 
-      {!showAccountsList && !showMonthlyPayments && !showEditModal && !deleteConfirmAccount && !markPaidAccount && !lastPaymentConfirm && !undoPaymentGroup && (
+      {!showAccountsList && !showMonthlyPayments && !showEmiDueList && !showEditModal && !deleteConfirmAccount && !markPaidAccount && !lastPaymentConfirm && !undoPaymentGroup && (
         <nav className="bottom-nav">
           {screens.map((screen) => (
             <button

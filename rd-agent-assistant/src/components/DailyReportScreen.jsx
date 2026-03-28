@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { formatDateLong } from '../lib/utils'
+import { formatDateLong, getPaymentBreakdown } from '../lib/utils'
 
 const MONTHS = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -17,11 +17,14 @@ function groupByAccount(payments) {
         village: payment.accounts?.village || '-',
         emisPaid: 0,
         totalAmount: 0,
+        dueAmount: 0,
         payments: []
       }
     }
+    const paymentBreakdown = getPaymentBreakdown(payment)
     grouped[accountId].emisPaid += Number(payment.emis_paid || 1)
-    grouped[accountId].totalAmount += Number(payment.amount || 0)
+    grouped[accountId].totalAmount += paymentBreakdown.totalAmount
+    grouped[accountId].dueAmount += paymentBreakdown.dueAmount
     grouped[accountId].payments.push(payment)
   })
   return Object.values(grouped)
@@ -185,8 +188,7 @@ function DailyReportScreen({
 
               <div className="list-stack">
                 {groupedMonthly.map((group) => {
-                  const paidToday = group.payments.some((p) => p.payment_date === todayIso)
-                  const canUndo = isCurrentMonthSelected && paidToday
+                  const canUndo = isCurrentMonthSelected
                   return (
                     <article className="card payment-group-card" key={group.accountId}>
                       <div className="payment-group-header">

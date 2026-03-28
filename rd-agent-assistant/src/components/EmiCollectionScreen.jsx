@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import AccountCard from './AccountCard'
 
 function EmiCollectionScreen({ accounts, paidAccountIds, onMarkPaidClick }) {
   const [selectedVillage, setSelectedVillage] = useState('all')
   const [selectedCycle, setSelectedCycle] = useState('all')
   const [searchName, setSearchName] = useState('')
+  const [toastMessage, setToastMessage] = useState('')
 
   const villages = useMemo(() => {
     const allVillages = accounts.map((account) => account.village).filter(Boolean)
@@ -19,6 +20,24 @@ function EmiCollectionScreen({ accounts, paidAccountIds, onMarkPaidClick }) {
       return villageMatch && cycleMatch && nameMatch
     })
   }, [accounts, selectedVillage, selectedCycle, searchName])
+
+  useEffect(() => {
+    if (!toastMessage) return
+    const timer = setTimeout(() => setToastMessage(''), 2200)
+    return () => clearTimeout(timer)
+  }, [toastMessage])
+
+  function handleCallClick(account) {
+    const phone = String(account?.phone || '').trim()
+    const hasValidPhone = /^\d{10}$/.test(phone) && phone !== '0'
+
+    if (hasValidPhone) {
+      window.location.href = `tel:${phone}`
+      return
+    }
+
+    setToastMessage('No mobile number linked')
+  }
 
   return (
     <section>
@@ -72,9 +91,12 @@ function EmiCollectionScreen({ accounts, paidAccountIds, onMarkPaidClick }) {
             account={account}
             isPaid={paidAccountIds.has(account.id)}
             onMarkPaid={onMarkPaidClick}
+            onCall={handleCallClick}
           />
         ))}
       </div>
+
+      {toastMessage ? <div className="toast-message">{toastMessage}</div> : null}
     </section>
   )
 }
