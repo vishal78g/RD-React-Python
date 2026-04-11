@@ -1,5 +1,6 @@
 function DashboardScreen({
   totalAccounts,
+  totalClosedAccounts,
   totalAmountPaidTillNow,
   totalEmiDue,
   totalCollectedToday,
@@ -7,6 +8,7 @@ function DashboardScreen({
   totalCollectedThisMonth,
   totalCollectedThisMonthDue,
   onViewAccounts,
+  onViewClosedAccounts,
   onViewMonthlyPayments,
   onViewEmiDueList
 }) {
@@ -18,6 +20,7 @@ function DashboardScreen({
 
   const cards = [
     { label: 'Total Accounts', value: totalAccounts, action: onViewAccounts },
+    { label: 'Closed Accounts', value: totalClosedAccounts, action: onViewClosedAccounts },
     { label: 'Total Amount Paid Till Now', value: `₹ ${formatCurrency(totalAmountPaidTillNow)}` },
     { label: 'Total EMI Due', value: `₹ ${formatCurrency(totalEmiDue)}`, action: onViewEmiDueList },
     {

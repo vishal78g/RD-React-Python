@@ -43,6 +43,7 @@ function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [authError, setAuthError] = useState('')
   const [showAccountsList, setShowAccountsList] = useState(false)
+  const [accountsListType, setAccountsListType] = useState('active')
   const [showMonthlyPayments, setShowMonthlyPayments] = useState(false)
   const [showEmiDueList, setShowEmiDueList] = useState(false)
   const [focusedAccountId, setFocusedAccountId] = useState(null)
@@ -69,19 +70,55 @@ function App() {
   const currentYear = today.getFullYear()
   const todayIso = today.toISOString().slice(0, 10)
 
+  const activeAccounts = useMemo(
+    () => accounts.filter((account) => account.active_status !== false),
+    [accounts]
+  )
+
+  const closedAccounts = useMemo(
+    () => accounts.filter((account) => account.active_status === false),
+    [accounts]
+  )
+
+  const activeAccountIds = useMemo(
+    () => new Set(activeAccounts.map((account) => account.id)),
+    [activeAccounts]
+  )
+
+  const activeCurrentMonthCollections = useMemo(
+    () => currentMonthCollections.filter((record) => activeAccountIds.has(record.account_id)),
+    [currentMonthCollections, activeAccountIds]
+  )
+
+  const activeTodayPayments = useMemo(
+    () => todayPayments.filter((payment) => activeAccountIds.has(payment.account_id)),
+    [todayPayments, activeAccountIds]
+  )
+
+  const activeAllCollections = useMemo(
+    () => allCollections.filter((payment) => activeAccountIds.has(payment.account_id)),
+    [allCollections, activeAccountIds]
+  )
+
+  const activeReportMonthlyPayments = useMemo(() => {
+    if (reportMonthlyPayments === null) return null
+    return reportMonthlyPayments.filter((payment) => activeAccountIds.has(payment.account_id))
+  }, [reportMonthlyPayments, activeAccountIds])
+
   const paidAccountIds = useMemo(
-    () => new Set(currentMonthCollections.map((record) => record.account_id)),
-    [currentMonthCollections]
+    () => new Set(activeCurrentMonthCollections.map((record) => record.account_id)),
+    [activeCurrentMonthCollections]
   )
 
   const dashboardData = useMemo(() => {
-    const totalAccounts = accounts.length
-    const totalAmountPaidTillNow = accounts.reduce(
+    const totalAccounts = activeAccounts.length
+    const totalClosedAccounts = closedAccounts.length
+    const totalAmountPaidTillNow = activeAccounts.reduce(
       (sum, account) => sum + Number(account.emi_amount || 0) * Number(account.month_paid_upto || 0),
       0
     )
 
-    const totalEmiDue = accounts.reduce((sum, account) => {
+    const totalEmiDue = activeAccounts.reduce((sum, account) => {
       const emiAmount = Number(account.emi_amount || 0)
       const paidThisMonth = paidAccountIds.has(account.id)
 
@@ -90,22 +127,23 @@ function App() {
       return sum + emiAmount * monthsDue
     }, 0)
 
-    const totalCollectedToday = todayPayments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
-    const totalCollectedTodayDue = todayPayments.reduce(
+    const totalCollectedToday = activeTodayPayments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
+    const totalCollectedTodayDue = activeTodayPayments.reduce(
       (sum, payment) => sum + getPaymentBreakdown(payment).dueAmount,
       0
     )
-    const totalCollectedThisMonth = currentMonthCollections.reduce(
+    const totalCollectedThisMonth = activeCurrentMonthCollections.reduce(
       (sum, payment) => sum + Number(payment.amount || 0),
       0
     )
-    const totalCollectedThisMonthDue = currentMonthCollections.reduce(
+    const totalCollectedThisMonthDue = activeCurrentMonthCollections.reduce(
       (sum, payment) => sum + getPaymentBreakdown(payment).dueAmount,
       0
     )
 
     return {
       totalAccounts,
+      totalClosedAccounts,
       totalAmountPaidTillNow,
       totalEmiDue,
       totalCollectedToday,
@@ -113,7 +151,13 @@ function App() {
       totalCollectedThisMonth,
       totalCollectedThisMonthDue
     }
-  }, [accounts, todayPayments, currentMonthCollections, paidAccountIds])
+  }, [
+    activeAccounts,
+    activeCurrentMonthCollections,
+    activeTodayPayments,
+    closedAccounts,
+    paidAccountIds
+  ])
 
   useEffect(() => {
     cacheImageInBrowser(rdLogo).catch(() => {
@@ -468,11 +512,19 @@ function App() {
 
   function handleViewAccounts() {
     setFocusedAccountId(null)
+    setAccountsListType('active')
+    setShowAccountsList(true)
+  }
+
+  function handleViewClosedAccounts() {
+    setFocusedAccountId(null)
+    setAccountsListType('closed')
     setShowAccountsList(true)
   }
 
   function handleCloseAccountsList() {
     setShowAccountsList(false)
+    setAccountsListType('active')
   }
 
   function handleViewMonthlyPayments() {
@@ -495,7 +547,7 @@ function App() {
     if (showMonthlyPayments) {
       return (
         <MonthlyPaymentsScreen
-          payments={currentMonthCollections}
+          payments={activeCurrentMonthCollections}
           month={currentMonth}
           year={currentYear}
           onClose={handleCloseMonthlyPayments}
@@ -506,7 +558,7 @@ function App() {
     if (showEmiDueList) {
       return (
         <EmiDueListScreen
-          accounts={accounts}
+          accounts={activeAccounts}
           paidAccountIds={paidAccountIds}
           onClose={handleCloseEmiDueList}
         />
@@ -516,7 +568,9 @@ function App() {
     if (showAccountsList) {
       return (
         <AccountsListScreen
-          accounts={accounts}
+          accounts={accountsListType === 'closed' ? closedAccounts : activeAccounts}
+          title={accountsListType === 'closed' ? 'Closed Accounts' : 'All Active Accounts'}
+          showActions={accountsListType !== 'closed'}
           focusedAccountId={focusedAccountId}
           onEdit={handleStartEdit}
           onDelete={handleStartDelete}
@@ -530,6 +584,7 @@ function App() {
         <DashboardScreen
           {...dashboardData}
           onViewAccounts={handleViewAccounts}
+          onViewClosedAccounts={handleViewClosedAccounts}
           onViewMonthlyPayments={handleViewMonthlyPayments}
           onViewEmiDueList={handleViewEmiDueList}
         />
@@ -539,7 +594,7 @@ function App() {
     if (activeScreen === 'emi') {
       return (
         <EmiCollectionScreen
-          accounts={accounts}
+          accounts={activeAccounts}
           paidAccountIds={paidAccountIds}
           onMarkPaidClick={handleMarkPaidClick}
         />
@@ -549,10 +604,10 @@ function App() {
     if (activeScreen === 'summary') {
       return (
         <SummaryScreen
-          accounts={accounts}
-          currentMonthCollections={currentMonthCollections}
-          todayPayments={todayPayments}
-          allCollections={allCollections}
+          accounts={activeAccounts}
+          currentMonthCollections={activeCurrentMonthCollections}
+          todayPayments={activeTodayPayments}
+          allCollections={activeAllCollections}
           paidAccountIds={paidAccountIds}
         />
       )
@@ -560,12 +615,12 @@ function App() {
 
     return (
       <DailyReportScreen
-        payments={todayPayments}
+        payments={activeTodayPayments}
         onUndoPayment={handleUndoPayment}
-        currentMonthPayments={currentMonthCollections}
+        currentMonthPayments={activeCurrentMonthCollections}
         currentMonth={currentMonth}
         currentYear={currentYear}
-        reportMonthlyPayments={reportMonthlyPayments}
+        reportMonthlyPayments={activeReportMonthlyPayments}
         reportMonthlyLoading={reportMonthlyLoading}
         onFetchMonthlyPayments={fetchReportMonthlyPayments}
       />

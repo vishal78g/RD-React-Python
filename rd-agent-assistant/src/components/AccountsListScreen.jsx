@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { formatDateLong } from '../lib/utils'
 
-function AccountsListScreen({ accounts, focusedAccountId, onEdit, onDelete, onClose }) {
+function AccountsListScreen({
+  accounts,
+  focusedAccountId,
+  onEdit,
+  onDelete,
+  onClose,
+  title = 'All Accounts',
+  showActions = true
+}) {
   const [searchName, setSearchName] = useState('')
   const accountRefs = useRef(new Map())
 
@@ -26,7 +34,7 @@ function AccountsListScreen({ accounts, focusedAccountId, onEdit, onDelete, onCl
   return (
     <section>
       <div className="screen-header">
-        <h2 className="screen-title">All Accounts</h2>
+        <h2 className="screen-title">{title}</h2>
         <button className="btn btn-close" onClick={onClose} title="Close">
           ✕
         </button>
@@ -96,18 +104,20 @@ function AccountsListScreen({ accounts, focusedAccountId, onEdit, onDelete, onCl
                 </div>
               </div>
 
-              <div className="account-actions">
-                <button
-                  className="btn btn-secondary"
-                  onClick={() => onEdit(account)}
-                >
-                  Edit
-                </button>
+              {showActions ? (
+                <div className="account-actions">
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => onEdit(account)}
+                  >
+                    Edit
+                  </button>
 
-                <button className="btn btn-danger" onClick={() => onDelete(account)}>
-                  Delete
-                </button>
-              </div>
+                  <button className="btn btn-danger" onClick={() => onDelete(account)}>
+                    Delete
+                  </button>
+                </div>
+              ) : null}
             </article>
           ))}
         </div>

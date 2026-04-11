@@ -210,7 +210,7 @@ def click_submit(page: Page) -> None:
 
 
 def login_with_retry(page: Page) -> None:
-    page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+    page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
     page.locator(USERNAME_SELECTOR).first.fill(USERNAME)
     page.locator(PASSWORD_SELECTOR).first.fill(PASSWORD)
 
@@ -323,6 +323,22 @@ def extract_rows_from_current_page(page: Page) -> List[Dict[str, str]]:
         )
 
     return extracted
+
+
+def create_summary_only_record(summary_row: Dict[str, str]) -> Dict[str, str]:
+    """Create a record with only summary data (for existing accounts)."""
+    return {
+        "Account Number": summary_row["Account Number"],
+        "Name": summary_row["Account Name"],
+        "Account Opening Date": "",
+        "Monthly Emi": "",
+        "Month Paid Upto": summary_row["Month Paid Upto"],
+        "Next Emi Date": summary_row["Next RD Installment Date"],
+        "Village": "",
+        "Mobile Number": "0",
+        "Emi Cycle": "",
+    }
+
 
 
 def extract_account_numbers_from_current_page(page: Page) -> List[str]:
@@ -535,6 +551,27 @@ def save_to_csv(records: List[Dict[str, str]]) -> Path:
     return output_file
 
 
+def chunked_records(items: List[Dict[str, object]], size: int) -> List[List[Dict[str, object]]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def chunked_strings(items: List[str], size: int) -> List[List[str]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def fetch_existing_account_numbers() -> set:
+    """Fetch all existing account numbers from the database."""
+    try:
+        supabase = get_supabase_client()
+        response = supabase.table("accounts").select("account_number").execute()
+        account_numbers = {record["account_number"] for record in response.data or []}
+        print(f"Fetched {len(account_numbers)} existing account numbers from database.")
+        return account_numbers
+    except Exception as e:
+        print(f"Warning: Failed to fetch existing accounts: {e}")
+        return set()
+
+
 def get_supabase_client() -> Client:
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         raise RuntimeError(
@@ -545,8 +582,8 @@ def get_supabase_client() -> Client:
 
 def upsert_to_database(records: List[Dict[str, str]]) -> tuple[int, int]:
     supabase = get_supabase_client()
-    inserted_count = 0
-    updated_count = 0
+    batch_size = 500
+    normalized_records: List[Dict[str, object]] = []
 
     for record in records:
         account_number = record["Account Number"]
@@ -556,39 +593,156 @@ def upsert_to_database(records: List[Dict[str, str]]) -> tuple[int, int]:
             month_paid_upto = int((month_paid_upto_text or "").strip())
         except ValueError:
             month_paid_upto = None
-        next_emi_date = parse_date_to_iso(record.get("Next Emi Date", ""))
 
-        existing = supabase.table("accounts").select("account_number").eq(
-            "account_number", account_number
-        ).execute()
+        monthly_emi_text = (record.get("Monthly Emi", "") or "").strip().replace(",", "")
+        try:
+            emi_amount = float(monthly_emi_text) if monthly_emi_text else None
+        except ValueError:
+            emi_amount = None
 
-        if existing.data and len(existing.data) > 0:
-            update_data: Dict[str, object] = {}
-            if month_paid_upto is not None:
-                update_data["month_paid_upto"] = month_paid_upto
-            update_data["next_emi_date"] = next_emi_date
-            supabase.table("accounts").update(update_data).eq(
-                "account_number", account_number
-            ).execute()
-            updated_count += 1
-            print(f"Updated account {account_number}")
-        else:
-            insert_data = {
+        emi_cycle_text = (record.get("Emi Cycle", "") or "").strip()
+        try:
+            emi_cycle = int(emi_cycle_text) if emi_cycle_text else None
+        except ValueError:
+            emi_cycle = None
+
+        normalized_records.append(
+            {
                 "account_number": account_number,
-                "name": record["Name"],
-                "village": record["Village"],
-                "phone": record["Mobile Number"],
-                "emi_amount": float(record["Monthly Emi"]),
-                "emi_cycle": int(record["Emi Cycle"]),
+                "name": record.get("Name", ""),
+                "village": record.get("Village", ""),
+                "phone": record.get("Mobile Number", ""),
+                "emi_amount": emi_amount,
+                "emi_cycle": emi_cycle,
                 "account_opening_date": account_opening_date,
                 "month_paid_upto": month_paid_upto,
-                "next_emi_date": next_emi_date,
+                "next_emi_date": parse_date_to_iso(record.get("Next Emi Date", "")),
             }
-            supabase.table("accounts").insert(insert_data).execute()
-            inserted_count += 1
-            print(f"Inserted account {account_number}")
+        )
 
-    return inserted_count, updated_count
+    account_numbers = [str(item["account_number"]) for item in normalized_records]
+    extracted_account_numbers_set = set(account_numbers)
+    existing_records: Dict[str, Dict[str, object]] = {}
+
+    for number_chunk in chunked_strings(account_numbers, batch_size):
+        response = (
+            supabase.table("accounts")
+            .select(
+                "account_number,name,village,phone,emi_amount,emi_cycle,account_opening_date,month_paid_upto,next_emi_date"
+            )
+            .in_("account_number", number_chunk)
+            .execute()
+        )
+        for existing_record in response.data or []:
+            value = existing_record.get("account_number")
+            if value:
+                existing_records[value] = existing_record
+
+    update_rows: List[Dict[str, object]] = []
+    insert_rows: List[Dict[str, object]] = []
+
+    for item in normalized_records:
+        account_number = str(item["account_number"])
+        if account_number in existing_records:
+            existing_record = existing_records[account_number]
+            update_payload: Dict[str, object] = {
+                "account_number": account_number,
+                "name": existing_record.get("name"),
+                "village": existing_record.get("village"),
+                "phone": existing_record.get("phone"),
+                "emi_amount": existing_record.get("emi_amount"),
+                "emi_cycle": existing_record.get("emi_cycle"),
+                "account_opening_date": existing_record.get("account_opening_date"),
+                "month_paid_upto": existing_record.get("month_paid_upto"),
+                "next_emi_date": item["next_emi_date"],
+                "active_status": True,
+            }
+            if item["month_paid_upto"] is not None:
+                update_payload["month_paid_upto"] = item["month_paid_upto"]
+            update_rows.append(update_payload)
+            continue
+
+        insert_payload: Dict[str, object] = {
+            "account_number": account_number,
+            "name": item["name"],
+            "village": item["village"],
+            "phone": item["phone"],
+            "month_paid_upto": item["month_paid_upto"],
+            "next_emi_date": item["next_emi_date"],
+            "active_status": True,
+        }
+        if item["emi_amount"] is not None:
+            insert_payload["emi_amount"] = item["emi_amount"]
+        if item["emi_cycle"] is not None:
+            insert_payload["emi_cycle"] = item["emi_cycle"]
+        if item["account_opening_date"] is not None:
+            insert_payload["account_opening_date"] = item["account_opening_date"]
+        insert_rows.append(insert_payload)
+
+    for update_chunk in chunked_records(update_rows, batch_size):
+        supabase.table("accounts").upsert(update_chunk, on_conflict="account_number").execute()
+
+    for insert_chunk in chunked_records(insert_rows, batch_size):
+        supabase.table("accounts").insert(insert_chunk).execute()
+
+    print("Updating inactive status for accounts not in current extraction...")
+    update_inactive_status(extracted_account_numbers_set)
+
+    return len(insert_rows), len(update_rows)
+
+
+def update_inactive_status(extracted_account_numbers: set) -> None:
+    """Set active_status to False for accounts not found in current extraction."""
+    supabase = get_supabase_client()
+    batch_size = 500
+
+    try:
+        # Fetch ALL accounts from database
+        all_accounts_response = supabase.table("accounts").select("account_number").execute()
+        all_db_accounts = [record["account_number"] for record in all_accounts_response.data or []]
+
+        # Find accounts that are NOT in extracted data
+        accounts_to_deactivate = [acc for acc in all_db_accounts if acc not in extracted_account_numbers]
+
+        if not accounts_to_deactivate:
+            print(f"No accounts to deactivate. All {len(all_db_accounts)} DB accounts are in current extraction.")
+            return
+
+        print(f"Found {len(accounts_to_deactivate)} accounts not in current extraction. Setting active_status to False...")
+
+        # Update active_status to False in batches
+        for account_chunk in chunked_strings(accounts_to_deactivate, batch_size):
+            # Fetch existing records for this chunk
+            response = (
+                supabase.table("accounts")
+                .select("account_number,name,village,phone,emi_amount,emi_cycle,account_opening_date,month_paid_upto,next_emi_date")
+                .in_("account_number", account_chunk)
+                .execute()
+            )
+
+            # Build update payload with active_status = False
+            update_payloads = []
+            for record in response.data or []:
+                update_payloads.append({
+                    "account_number": record["account_number"],
+                    "name": record.get("name"),
+                    "village": record.get("village"),
+                    "phone": record.get("phone"),
+                    "emi_amount": record.get("emi_amount"),
+                    "emi_cycle": record.get("emi_cycle"),
+                    "account_opening_date": record.get("account_opening_date"),
+                    "month_paid_upto": record.get("month_paid_upto"),
+                    "next_emi_date": record.get("next_emi_date"),
+                    "active_status": False,
+                })
+
+            if update_payloads:
+                supabase.table("accounts").upsert(update_payloads, on_conflict="account_number").execute()
+
+        print(f"Successfully deactivated {len(accounts_to_deactivate)} accounts.")
+    except Exception as e:
+        print(f"Warning: Failed to update inactive status: {e}")
+
 
 
 def run() -> None:
@@ -617,33 +771,56 @@ def run() -> None:
             page.wait_for_timeout(1000)
             print("Navigated to Agent Enquire & Update Screen.")
 
+            progress_window.set_status("Fetching existing account numbers from database...")
+            existing_accounts = fetch_existing_account_numbers()
+            print(f"\nFound {len(existing_accounts)} existing accounts in database.")
+
             total_records = extract_total_count(page)
             print(f"Total records expected: {total_records}")
 
             all_records: List[Dict[str, str]] = []
+            new_accounts: List[str] = []
+            updated_accounts: List[str] = []
             processed_accounts = set()
             progress_window.set_total(total_records)
             progress_window.set_status("Extracting account details...")
 
             while len(processed_accounts) < total_records:
-                account_numbers = extract_account_numbers_from_current_page(page)
+                summary_rows = extract_rows_from_current_page(page)
 
-                for account_number in account_numbers:
+                for summary_row in summary_rows:
+                    account_number = summary_row["Account Number"]
+                    
                     if len(processed_accounts) >= total_records:
                         break
                     if account_number in processed_accounts:
                         continue
 
-                    open_account_details(page, account_number)
-                    account_data = capture_account_details(page)
-                    all_records.append(account_data)
-                    processed_accounts.add(account_data["Account Number"])
-                    return_to_summary_from_details(page)
+                    if account_number in existing_accounts:
+                        # Existing account: only update Month Paid Upto and Next RD Installment Due Date
+                        summary_record = create_summary_only_record(summary_row)
+                        all_records.append(summary_record)
+                        updated_accounts.append(account_number)
+                        processed_accounts.add(account_number)
+                        progress_window.advance(1)
+                        progress_window.set_status(
+                            f"Extracting account details... {len(processed_accounts)}/{total_records} "
+                            f"(New: {len(new_accounts)}, Updated: {len(updated_accounts)})"
+                        )
+                    else:
+                        # New account: extract full details from detail page
+                        open_account_details(page, account_number)
+                        account_data = capture_account_details(page)
+                        all_records.append(account_data)
+                        new_accounts.append(account_number)
+                        processed_accounts.add(account_data["Account Number"])
+                        return_to_summary_from_details(page)
 
-                    progress_window.advance(1)
-                    progress_window.set_status(
-                        f"Extracting account details... {len(processed_accounts)}/{total_records}"
-                    )
+                        progress_window.advance(1)
+                        progress_window.set_status(
+                            f"Extracting account details... {len(processed_accounts)}/{total_records} "
+                            f"(New: {len(new_accounts)}, Updated: {len(updated_accounts)})"
+                        )
 
                 if len(processed_accounts) >= total_records:
                     break
@@ -660,15 +837,22 @@ def run() -> None:
             print("\nPushing records to Supabase database...")
             inserted, updated = upsert_to_database(all_records)
             print(f"\n=== Database Stats ===")
-            print(f"Records Inserted: {inserted}")
-            print(f"Records Updated: {updated}")
+            print(f"New Accounts Inserted: {inserted}")
+            print(f"Existing Accounts Updated: {updated}")
             print(f"Total Processed: {len(all_records)}")
+            print(f"\nBreakdown:")
+            print(f"  - New accounts extracted & inserted: {len(new_accounts)}")
+            print(f"  - Existing accounts updated (summary only): {len(updated_accounts)}")
+            print(f"\nActive Status:")
+            print(f"  - Accounts marked ACTIVE (present in extraction): {len(new_accounts) + len(updated_accounts)}")
+            print(f"  - Accounts marked INACTIVE (not in extraction): See console output above")
 
             progress_window.set_status("Completed successfully.")
             context.close()
             browser.close()
     finally:
         progress_window.close()
+
 
 
 if __name__ == "__main__":
