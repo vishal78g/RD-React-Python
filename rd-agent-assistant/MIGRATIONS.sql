@@ -10,7 +10,8 @@ ALTER TABLE public.accounts
 ADD COLUMN account_number TEXT UNIQUE NOT NULL DEFAULT '',
 ADD COLUMN account_opening_date DATE,
 ADD COLUMN month_paid_upto INTEGER DEFAULT 0,
-ADD COLUMN next_emi_date DATE;
+ADD COLUMN next_emi_date DATE,
+ADD COLUMN active_status BOOLEAN DEFAULT FALSE;
 
 -- Set default for village to empty string (in case it already has NOT NULL)
 ALTER TABLE public.accounts
@@ -25,6 +26,9 @@ ALTER COLUMN village SET DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS idx_accounts_account_number 
 ON public.accounts(account_number);
+
+CREATE INDEX IF NOT EXISTS idx_accounts_active_status 
+ON public.accounts(active_status);
 
 CREATE INDEX IF NOT EXISTS idx_accounts_village 
 ON public.accounts(village);
@@ -158,7 +162,12 @@ create table if not exists public.emi_collections (
 -- 6. Account Number: unique identifier, must be provided
 -- 7. emis_paid: number of EMIs paid in one collection record (default 1)
 --    amount = emi_amount * emis_paid (total for the record)
+-- 8. active_status: boolean flag indicating if account is active/present in current extraction
+--    - TRUE: Account was found in the most recent web extraction (active)
+--    - FALSE: Account was NOT found in the most recent web extraction (inactive)
+--    - Auto-updated during extraction process; default is FALSE for new accounts
 --
 -- Format examples:
 --   account_opening_date: YYYY-MM-DD (stored), displayed as "dd-MMM-YYYY"
 --   next_emi_date: YYYY-MM-DD (stored), displayed as "dd-mmm-yyyy"
+--   active_status: FALSE (default for new accounts), updated to TRUE/FALSE during extraction

@@ -151,6 +151,14 @@ def read_csv_records(csv_path: Path) -> List[Dict[str, str]]:
         return list(reader)
 
 
+def chunked(items: List[Dict[str, object]], size: int) -> List[List[Dict[str, object]]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def chunked_strings(items: List[str], size: int) -> List[List[str]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
 def sync_accounts_from_csv(csv_path: Path) -> Tuple[int, int, int]:
     supabase = get_supabase_client()
     rows = read_csv_records(csv_path)
@@ -158,12 +166,14 @@ def sync_accounts_from_csv(csv_path: Path) -> Tuple[int, int, int]:
     inserted_count = 0
     updated_count = 0
     skipped_count = 0
+    batch_size = 500
+
+    normalized_rows: List[Dict[str, object]] = []
 
     for index, row in enumerate(rows, start=1):
         account_number = (row.get("Account Number") or "").strip()
         if not account_number:
             skipped_count += 1
-            print(f"Row {index}: skipped (missing Account Number)")
             continue
 
         name = (row.get("Name") or "").strip()
@@ -175,47 +185,83 @@ def sync_accounts_from_csv(csv_path: Path) -> Tuple[int, int, int]:
         month_paid_upto = parse_int(row.get("Month Paid Upto", ""))
         next_emi_date = parse_date_to_iso(row.get("Next Emi Date", ""))
 
-        existing = (
-            supabase.table("accounts")
-            .select("account_number")
-            .eq("account_number", account_number)
-            .limit(1)
-            .execute()
-        )
-
-        if existing.data:
-            update_data: Dict[str, object] = {}
-            if month_paid_upto is not None:
-                update_data["month_paid_upto"] = month_paid_upto
-            update_data["next_emi_date"] = next_emi_date
-
-            (
-                supabase.table("accounts")
-                .update(update_data)
-                .eq("account_number", account_number)
-                .execute()
-            )
-            updated_count += 1
-            print(f"Row {index}: updated account {account_number}")
-        else:
-            insert_data: Dict[str, object] = {
+        normalized_rows.append(
+            {
                 "account_number": account_number,
                 "name": name,
                 "village": village,
                 "phone": phone,
+                "emi_amount": emi_amount,
+                "emi_cycle": emi_cycle,
+                "account_opening_date": account_opening_date,
                 "month_paid_upto": month_paid_upto,
                 "next_emi_date": next_emi_date,
             }
-            if emi_amount is not None:
-                insert_data["emi_amount"] = emi_amount
-            if emi_cycle is not None:
-                insert_data["emi_cycle"] = emi_cycle
-            if account_opening_date is not None:
-                insert_data["account_opening_date"] = account_opening_date
+        )
 
-            supabase.table("accounts").insert(insert_data).execute()
-            inserted_count += 1
-            print(f"Row {index}: inserted account {account_number}")
+    account_numbers = [str(item["account_number"]) for item in normalized_rows]
+    existing_records: Dict[str, Dict[str, object]] = {}
+
+    for number_chunk in chunked_strings(account_numbers, batch_size):
+        response = (
+            supabase.table("accounts")
+            .select(
+                "account_number,name,village,phone,emi_amount,emi_cycle,account_opening_date,month_paid_upto,next_emi_date"
+            )
+            .in_("account_number", number_chunk)
+            .execute()
+        )
+        for record in response.data or []:
+            value = record.get("account_number")
+            if value:
+                existing_records[value] = record
+
+    update_rows: List[Dict[str, object]] = []
+    insert_rows: List[Dict[str, object]] = []
+
+    for item in normalized_rows:
+        account_number = str(item["account_number"])
+        if account_number in existing_records:
+            existing_record = existing_records[account_number]
+            update_payload: Dict[str, object] = {
+                "account_number": account_number,
+                "name": existing_record.get("name"),
+                "village": existing_record.get("village"),
+                "phone": existing_record.get("phone"),
+                "emi_amount": existing_record.get("emi_amount"),
+                "emi_cycle": existing_record.get("emi_cycle"),
+                "account_opening_date": existing_record.get("account_opening_date"),
+                "month_paid_upto": existing_record.get("month_paid_upto"),
+                "next_emi_date": item["next_emi_date"],
+            }
+            if item["month_paid_upto"] is not None:
+                update_payload["month_paid_upto"] = item["month_paid_upto"]
+            update_rows.append(update_payload)
+            continue
+
+        insert_payload: Dict[str, object] = {
+            "account_number": account_number,
+            "name": item["name"],
+            "village": item["village"],
+            "phone": item["phone"],
+            "month_paid_upto": item["month_paid_upto"],
+            "next_emi_date": item["next_emi_date"],
+        }
+        if item["emi_amount"] is not None:
+            insert_payload["emi_amount"] = item["emi_amount"]
+        if item["emi_cycle"] is not None:
+            insert_payload["emi_cycle"] = item["emi_cycle"]
+        if item["account_opening_date"] is not None:
+            insert_payload["account_opening_date"] = item["account_opening_date"]
+        insert_rows.append(insert_payload)
+
+    for update_chunk in chunked(update_rows, batch_size):
+        supabase.table("accounts").upsert(update_chunk, on_conflict="account_number").execute()
+    updated_count = len(update_rows)
+
+    for insert_chunk in chunked(insert_rows, batch_size):
+        supabase.table("accounts").insert(insert_chunk).execute()
+    inserted_count = len(insert_rows)
 
     return inserted_count, updated_count, skipped_count
 
