@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import AccountCard from './AccountCard'
+import { formatDateLong } from '../lib/utils'
 
-function EmiCollectionScreen({ accounts, paidAccountIds, onMarkPaidClick }) {
+function EmiCollectionScreen({ accounts, paidAccountIds, onMarkPaidClick, onEditAccount }) {
   const [selectedVillage, setSelectedVillage] = useState('all')
   const [selectedCycle, setSelectedCycle] = useState('all')
   const [searchName, setSearchName] = useState('')
   const [toastMessage, setToastMessage] = useState('')
+  const [infoAccount, setInfoAccount] = useState(null)
 
   const villages = useMemo(() => {
     const allVillages = accounts.map((account) => account.village).filter(Boolean)
@@ -92,11 +94,79 @@ function EmiCollectionScreen({ accounts, paidAccountIds, onMarkPaidClick }) {
             isPaid={paidAccountIds.has(account.id)}
             onMarkPaid={onMarkPaidClick}
             onCall={handleCallClick}
+            onInfo={setInfoAccount}
           />
         ))}
       </div>
 
       {toastMessage ? <div className="toast-message">{toastMessage}</div> : null}
+
+      {infoAccount ? (
+        <div className="modal-overlay">
+          <div className="modal">
+            <div className="modal-header">
+              <h2>Account Summary</h2>
+              <button className="btn-close" onClick={() => setInfoAccount(null)}>✕</button>
+            </div>
+
+            <div className="modal-content">
+              <div className="modal-summary-compact">
+                <div className="summary-item">
+                  <span className="summary-item-label">Account Number</span>
+                  <span className="summary-item-value">{infoAccount.account_number || '-'}</span>
+                </div>
+                <div className="summary-item">
+                  <span className="summary-item-label">Name</span>
+                  <span className="summary-item-value">{infoAccount.name || '-'}</span>
+                </div>
+                <div className="summary-item">
+                  <span className="summary-item-label">Village</span>
+                  <span className="summary-item-value">{infoAccount.village || '-'}</span>
+                </div>
+                <div className="summary-item">
+                  <span className="summary-item-label">Mobile</span>
+                  <span className="summary-item-value">{infoAccount.phone || '-'}</span>
+                </div>
+                <div className="summary-item">
+                  <span className="summary-item-label">CIF Number</span>
+                  <span className="summary-item-value">{infoAccount.cif_number || '-'}</span>
+                </div>
+                <div className="summary-item">
+                  <span className="summary-item-label">EMI Amount</span>
+                  <span className="summary-item-value">₹ {Number(infoAccount.emi_amount || 0).toFixed(2)}</span>
+                </div>
+                <div className="summary-item">
+                  <span className="summary-item-label">EMI Cycle</span>
+                  <span className="summary-item-value">{infoAccount.emi_cycle || '-'} days</span>
+                </div>
+                <div className="summary-item">
+                  <span className="summary-item-label">Next EMI Date</span>
+                  <span className="summary-item-value">{formatDateLong(infoAccount.next_emi_date)}</span>
+                </div>
+                <div className="summary-item">
+                  <span className="summary-item-label">Remarks</span>
+                  <span className="summary-item-value">{infoAccount.remarks || '-'}</span>
+                </div>
+              </div>
+
+              <div className="modal-actions">
+                <button
+                  className="btn btn-primary"
+                  onClick={() => {
+                    onEditAccount(infoAccount)
+                    setInfoAccount(null)
+                  }}
+                >
+                  Edit
+                </button>
+                <button className="btn btn-secondary" onClick={() => setInfoAccount(null)}>
+                  Back
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   )
 }

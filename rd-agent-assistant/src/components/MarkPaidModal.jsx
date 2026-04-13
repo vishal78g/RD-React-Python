@@ -1,33 +1,88 @@
-import { useState } from 'react'
-import { getEmiStatus, getPaymentTotals } from '../lib/utils'
+import { useEffect, useMemo, useState } from 'react'
+import { getPaymentTotals } from '../lib/utils'
 
 function MarkPaidModal({ account, onConfirm, onCancel, submitting }) {
-  const [quantityInput, setQuantityInput] = useState('1')
+  const [paymentMode, setPaymentMode] = useState('CASH')
+  const [selectedMonthKeys, setSelectedMonthKeys] = useState([])
 
-  const parsedQuantity = Number(quantityInput)
-  const quantity = Number.isInteger(parsedQuantity)
-    ? Math.max(1, Math.min(12, parsedQuantity))
-    : 0
+  const monthOptions = useMemo(() => {
+    const current = new Date()
+    const currentMonthStart = new Date(current.getFullYear(), current.getMonth(), 1)
 
-  const emiStatus = getEmiStatus(account.next_emi_date)
-  const { baseAmount, dueAmount, totalAmount } = getPaymentTotals({
+    const nextDate = new Date(account.next_emi_date)
+    const nextMonthStart = Number.isNaN(nextDate.getTime())
+      ? currentMonthStart
+      : new Date(nextDate.getFullYear(), nextDate.getMonth(), 1)
+
+    // For advance accounts, allow only next EMI month.
+    if (nextMonthStart > currentMonthStart) {
+      const month = nextMonthStart.getMonth() + 1
+      const year = nextMonthStart.getFullYear()
+      const monthLabel = nextMonthStart.toLocaleString('en-US', { month: 'short' }).toUpperCase()
+
+      return [{
+        key: `${year}-${String(month).padStart(2, '0')}`,
+        month,
+        year,
+        monthLabel,
+        fullLabel: `${monthLabel} ${year}`
+      }]
+    }
+
+    const start = nextMonthStart
+    const end = currentMonthStart
+
+    const months = []
+    const cursor = new Date(start)
+
+    while (cursor <= end) {
+      const month = cursor.getMonth() + 1
+      const year = cursor.getFullYear()
+      const monthLabel = cursor.toLocaleString('en-US', { month: 'short' }).toUpperCase()
+
+      months.push({
+        key: `${year}-${String(month).padStart(2, '0')}`,
+        month,
+        year,
+        monthLabel,
+        fullLabel: `${monthLabel} ${year}`
+      })
+
+      cursor.setMonth(cursor.getMonth() + 1)
+    }
+
+    return months
+  }, [account.next_emi_date])
+
+  useEffect(() => {
+    setSelectedMonthKeys((previous) => {
+      const validSelections = previous.filter((key) => monthOptions.some((month) => month.key === key))
+      if (validSelections.length > 0) return validSelections
+
+      const defaultMonth = monthOptions[0]
+      return defaultMonth ? [defaultMonth.key] : []
+    })
+  }, [monthOptions])
+
+  const selectedMonths = useMemo(
+    () => monthOptions.filter((month) => selectedMonthKeys.includes(month.key)),
+    [monthOptions, selectedMonthKeys]
+  )
+
+  const quantity = selectedMonths.length
+
+  const { totalAmount } = getPaymentTotals({
     emiAmount: account.emi_amount,
     nextEmiDate: account.next_emi_date,
     quantity
   })
 
-  function handleQuantityChange(event) {
-    const value = event.target.value
-
-    if (value === '') {
-      setQuantityInput('')
-      return
-    }
-
-    if (!/^\d+$/.test(value)) return
-
-    const numeric = Math.max(1, Math.min(12, Number(value)))
-    setQuantityInput(String(numeric))
+  function handleToggleMonth(monthKey) {
+    setSelectedMonthKeys((previous) =>
+      previous.includes(monthKey)
+        ? previous.filter((key) => key !== monthKey)
+        : [...previous, monthKey]
+    )
   }
 
   return (
@@ -45,41 +100,54 @@ function MarkPaidModal({ account, onConfirm, onCancel, submitting }) {
           <p>
             <strong>EMI Amount:</strong> ₹ {Number(account.emi_amount).toFixed(2)}
           </p>
-          <p>
-            <strong>Pending Months:</strong> {emiStatus.status === 'PENDING' ? emiStatus.count : 0}
-          </p>
 
           <label className="input-label">
-            Number of EMIs to Mark as Paid
-            <input
-              className="input"
-              type="number"
-              min="1"
-              max="12"
-              value={quantityInput}
-              onChange={handleQuantityChange}
-            />
+            Payment Mode
+            <div className="payment-mode-switch">
+              <button
+                type="button"
+                className={`mode-btn ${paymentMode === 'CASH' ? 'active' : ''}`}
+                onClick={() => setPaymentMode('CASH')}
+                disabled={submitting}
+              >
+                CASH
+              </button>
+              <button
+                type="button"
+                className={`mode-btn ${paymentMode === 'ONLINE' ? 'active' : ''}`}
+                onClick={() => setPaymentMode('ONLINE')}
+                disabled={submitting}
+              >
+                ONLINE
+              </button>
+            </div>
+          </label>
+
+          <label className="input-label">
+            Select Months for EMI
+            <div className="month-chip-grid">
+              {monthOptions.map((month) => (
+                <button
+                  type="button"
+                  key={month.key}
+                  className={`month-chip ${selectedMonthKeys.includes(month.key) ? 'active' : ''}`}
+                  onClick={() => handleToggleMonth(month.key)}
+                  disabled={submitting}
+                  title={month.fullLabel}
+                >
+                  {month.monthLabel}
+                </button>
+              ))}
+            </div>
           </label>
 
           <div className="payment-summary">
             <div className="summary-row">
-              <span>EMI Amount:</span>
-              <span>₹ {Number(account.emi_amount).toFixed(2)}</span>
-            </div>
-            <div className="summary-row">
-              <span>Number of EMIs:</span>
+              <span>Number of EMI Due:</span>
               <span>{quantity}</span>
             </div>
-            <div className="summary-row">
-              <span>EMI Total:</span>
-              <span>₹ {baseAmount.toFixed(2)}</span>
-            </div>
-            <div className="summary-row">
-              <span>Due Amount:</span>
-              <span>₹ {dueAmount.toFixed(2)}</span>
-            </div>
             <div className="summary-row total">
-              <span>Total Amount:</span>
+              <span>Total:</span>
               <span>₹ {totalAmount.toFixed(2)}</span>
             </div>
           </div>
@@ -87,8 +155,8 @@ function MarkPaidModal({ account, onConfirm, onCancel, submitting }) {
           <div className="modal-actions">
             <button
               className="btn btn-primary"
-              onClick={() => onConfirm(quantity)}
-              disabled={submitting || !Number.isInteger(parsedQuantity) || quantity < 1}
+              onClick={() => onConfirm({ quantity, selectedMonths, paymentMode })}
+              disabled={submitting || quantity < 1}
             >
               {submitting ? 'Processing...' : 'Confirm Payment'}
             </button>

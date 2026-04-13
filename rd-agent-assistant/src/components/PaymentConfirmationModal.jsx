@@ -1,6 +1,6 @@
 import { getPaymentTotals } from '../lib/utils'
 
-function PaymentConfirmationModal({ account, quantity, dueAmount, totalAmount, onClose }) {
+function PaymentConfirmationModal({ account, quantity, paymentMode, selectedMonths = [], dueAmount, totalAmount, onClose }) {
   const emiAmount = Number(account.emi_amount)
   const { baseAmount } = getPaymentTotals({
     emiAmount: account.emi_amount,
@@ -28,6 +28,15 @@ function PaymentConfirmationModal({ account, quantity, dueAmount, totalAmount, o
               </p>
               <p>
                 <strong>Number of EMIs:</strong> {quantity}
+              </p>
+              <p>
+                <strong>Payment Mode:</strong> {paymentMode || 'CASH'}
+              </p>
+              <p>
+                <strong>Selected Months:</strong>{' '}
+                {selectedMonths.length
+                  ? selectedMonths.map((month) => month.monthLabel || '').filter(Boolean).join(', ')
+                  : '-'}
               </p>
               <p>
                 <strong>EMI Total:</strong> ₹ {baseAmount.toFixed(2)}
