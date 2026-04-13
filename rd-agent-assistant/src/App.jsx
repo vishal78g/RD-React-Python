@@ -12,8 +12,14 @@ import PaymentConfirmationModal from './components/PaymentConfirmationModal'
 import LoginScreen from './components/LoginScreen'
 import EmiDueListScreen from './components/EmiDueListScreen'
 import SummaryScreen from './components/SummaryScreen'
+import VillagesScreen from './components/VillagesScreen'
 import { supabase } from './lib/supabase'
-import { getOutstandingEmiMonths, getPaymentBreakdown, getPaymentTotals } from './lib/utils'
+import {
+  getMonthsBetweenOpeningAndNextEmi,
+  getOutstandingEmiMonths,
+  getPaymentBreakdown,
+  getPaymentTotals
+} from './lib/utils'
 import rdLogo from './public/images/rdLogo.png'
 
 async function cacheImageInBrowser(imageUrl) {
@@ -46,6 +52,7 @@ function App() {
   const [accountsListType, setAccountsListType] = useState('active')
   const [showMonthlyPayments, setShowMonthlyPayments] = useState(false)
   const [showEmiDueList, setShowEmiDueList] = useState(false)
+  const [showVillagesList, setShowVillagesList] = useState(false)
   const [focusedAccountId, setFocusedAccountId] = useState(null)
   const [editingAccount, setEditingAccount] = useState(null)
   const [showEditModal, setShowEditModal] = useState(false)
@@ -59,10 +66,12 @@ function App() {
   const [reportMonthlyLoading, setReportMonthlyLoading] = useState(false)
   const [allCollections, setAllCollections] = useState([])
   const [accounts, setAccounts] = useState([])
+  const [villages, setVillages] = useState([])
   const [currentMonthCollections, setCurrentMonthCollections] = useState([])
   const [todayPayments, setTodayPayments] = useState([])
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [villageSubmitting, setVillageSubmitting] = useState(false)
   const [error, setError] = useState('')
 
   const today = new Date()
@@ -110,11 +119,56 @@ function App() {
     [activeCurrentMonthCollections]
   )
 
+  const villagesWithCounts = useMemo(() => {
+    const accountCountByVillage = accounts.reduce((map, account) => {
+      const villageName = (account.village || '').trim()
+      if (!villageName) return map
+
+      map[villageName] = (map[villageName] || 0) + 1
+      return map
+    }, {})
+
+    const villageByName = new Map()
+
+    for (const village of villages) {
+      const villageName = (village.village_name || '').trim()
+      if (!villageName) continue
+
+      villageByName.set(villageName, {
+        ...village,
+        village_name: villageName,
+        accountsCount: accountCountByVillage[villageName] || 0
+      })
+    }
+
+    for (const villageName of Object.keys(accountCountByVillage)) {
+      if (!villageByName.has(villageName)) {
+        villageByName.set(villageName, {
+          id: null,
+          village_name: villageName,
+          accountsCount: accountCountByVillage[villageName],
+          derivedFromAccounts: true
+        })
+      }
+    }
+
+    return Array.from(villageByName.values()).sort((a, b) =>
+      a.village_name.localeCompare(b.village_name, undefined, { sensitivity: 'base' })
+    )
+  }, [accounts, villages])
+
   const dashboardData = useMemo(() => {
     const totalAccounts = activeAccounts.length
     const totalClosedAccounts = closedAccounts.length
     const totalAmountPaidTillNow = activeAccounts.reduce(
-      (sum, account) => sum + Number(account.emi_amount || 0) * Number(account.month_paid_upto || 0),
+      (sum, account) => {
+        const emiAmount = Number(account.emi_amount || 0)
+        const paidMonths = getMonthsBetweenOpeningAndNextEmi(
+          account.account_opening_date,
+          account.next_emi_date
+        )
+        return sum + emiAmount * paidMonths
+      },
       0
     )
 
@@ -140,12 +194,14 @@ function App() {
       (sum, payment) => sum + getPaymentBreakdown(payment).dueAmount,
       0
     )
+    const totalVillages = villagesWithCounts.length
 
     return {
       totalAccounts,
       totalClosedAccounts,
       totalAmountPaidTillNow,
       totalEmiDue,
+      totalVillages,
       totalCollectedToday,
       totalCollectedTodayDue,
       totalCollectedThisMonth,
@@ -156,7 +212,8 @@ function App() {
     activeCurrentMonthCollections,
     activeTodayPayments,
     closedAccounts,
-    paidAccountIds
+    paidAccountIds,
+    villagesWithCounts
   ])
 
   useEffect(() => {
@@ -192,6 +249,46 @@ function App() {
     }
   }, [isAuthenticated])
 
+  async function syncVillagesFromAccounts(accountsData, villagesData) {
+    const existingVillageNames = new Set(
+      (villagesData || [])
+        .map((village) => (village.village_name || '').trim())
+        .filter(Boolean)
+    )
+
+    const missingVillageNames = [...new Set(
+      (accountsData || [])
+        .map((account) => (account.village || '').trim())
+        .filter(Boolean)
+    )].filter((villageName) => !existingVillageNames.has(villageName))
+
+    if (missingVillageNames.length === 0) {
+      return villagesData || []
+    }
+
+    const { error: upsertError } = await supabase
+      .from('villages')
+      .upsert(
+        missingVillageNames.map((villageName) => ({ village_name: villageName })),
+        { onConflict: 'village_name', ignoreDuplicates: true }
+      )
+
+    if (upsertError) {
+      return villagesData || []
+    }
+
+    const { data: refreshedVillages, error: refreshedVillagesError } = await supabase
+      .from('villages')
+      .select('id, village_name')
+      .order('village_name', { ascending: true })
+
+    if (refreshedVillagesError) {
+      return villagesData || []
+    }
+
+    return refreshedVillages || []
+  }
+
   function handleLogin(pin) {
     setAuthError('')
 
@@ -214,30 +311,35 @@ function App() {
     setError('')
 
     try {
-      const [accountsRes, monthRes, todayRes, allCollectionsRes] = await Promise.all([
+      const [accountsRes, villagesRes, monthRes, todayRes, allCollectionsRes] = await Promise.all([
         supabase.from('accounts').select('*').order('created_at', { ascending: false }),
+        supabase.from('villages').select('id, village_name').order('village_name', { ascending: true }),
         supabase
           .from('emi_collections')
-          .select('id, account_id, amount, emis_paid, payment_date, month, year, accounts(name, village, emi_amount, next_emi_date)')
+          .select('id, account_id, amount, emis_paid, payment_mode, payment_date, month, year, accounts(name, village, emi_amount, next_emi_date)')
           .eq('month', currentMonth)
           .eq('year', currentYear)
           .order('payment_date', { ascending: false }),
         supabase
           .from('emi_collections')
-          .select('id, account_id, amount, emis_paid, payment_date, accounts(name, village, phone, emi_amount, next_emi_date)')
+          .select('id, account_id, amount, emis_paid, payment_mode, payment_date, accounts(name, village, phone, emi_amount, next_emi_date)')
           .eq('payment_date', todayIso),
         supabase
           .from('emi_collections')
-          .select('id, account_id, amount, emis_paid, payment_date, month, year, accounts(name, village, phone, emi_amount, next_emi_date)')
+          .select('id, account_id, amount, emis_paid, payment_mode, payment_date, month, year, accounts(name, village, phone, emi_amount, next_emi_date)')
           .order('payment_date', { ascending: false })
       ])
 
       if (accountsRes.error) throw accountsRes.error
+        if (villagesRes.error) throw villagesRes.error
       if (monthRes.error) throw monthRes.error
       if (todayRes.error) throw todayRes.error
       if (allCollectionsRes.error) throw allCollectionsRes.error
 
+        const syncedVillages = await syncVillagesFromAccounts(accountsRes.data || [], villagesRes.data || [])
+
       setAccounts(accountsRes.data || [])
+        setVillages(syncedVillages)
       setCurrentMonthCollections(monthRes.data || [])
       setTodayPayments(todayRes.data || [])
       setAllCollections(allCollectionsRes.data || [])
@@ -270,6 +372,118 @@ function App() {
     }
   }
 
+  async function handleAddVillage(villageName) {
+    const trimmedName = (villageName || '').trim()
+    if (!trimmedName) {
+      setError('Village name is required.')
+      return false
+    }
+
+    setVillageSubmitting(true)
+    setError('')
+
+    try {
+      const { data, error: insertError } = await supabase
+        .from('villages')
+        .insert({ village_name: trimmedName })
+        .select('id, village_name')
+        .single()
+
+      if (insertError) throw insertError
+
+      setVillages((prev) => [...prev, data])
+      return true
+    } catch (insertError) {
+      setError(insertError.message || 'Could not add village.')
+      return false
+    } finally {
+      setVillageSubmitting(false)
+    }
+  }
+
+  async function handleUpdateVillage(villageId, currentName, nextName) {
+    const trimmedName = (nextName || '').trim()
+    if (!trimmedName) {
+      setError('Village name is required.')
+      return false
+    }
+
+    if (trimmedName === currentName) {
+      return true
+    }
+
+    setVillageSubmitting(true)
+    setError('')
+
+    try {
+      const { data: updatedVillage, error: updateError } = await supabase
+        .from('villages')
+        .update({ village_name: trimmedName })
+        .eq('id', villageId)
+        .select('id, village_name')
+        .single()
+
+      if (updateError) throw updateError
+
+      setVillages((prev) =>
+        prev.map((village) => (village.id === villageId ? updatedVillage : village))
+      )
+
+      // Reflect FK cascade rename immediately in UI.
+      setAccounts((prev) =>
+        prev.map((account) =>
+          account.village === currentName ? { ...account, village: updatedVillage.village_name } : account
+        )
+      )
+
+      return true
+    } catch (updateError) {
+      setError(updateError.message || 'Could not update village.')
+      return false
+    } finally {
+      setVillageSubmitting(false)
+    }
+  }
+
+  async function handleDeleteVillage(village) {
+    const villageName = village?.village_name || ''
+    if (!village || !village.id) {
+      setError('Invalid village selected.')
+      return false
+    }
+
+    if (villageName === '') {
+      setError('Default blank village cannot be deleted.')
+      return false
+    }
+
+    const linkedAccountsCount = accounts.filter((account) => (account.village || '') === villageName).length
+    if (linkedAccountsCount > 0) {
+      setError('Cannot delete village because linked accounts exist.')
+      return false
+    }
+
+    setVillageSubmitting(true)
+    setError('')
+
+    try {
+      const { error: deleteError } = await supabase
+        .from('villages')
+        .delete()
+        .eq('id', village.id)
+
+      if (deleteError) throw deleteError
+
+      setVillages((prev) => prev.filter((item) => item.id !== village.id))
+      return true
+    } catch (deleteError) {
+      setError(deleteError.message || 'Could not delete village.')
+      return false
+    } finally {
+      setVillageSubmitting(false)
+    }
+  }
+
   async function handleUpdateAccountSubmit(payload) {
     // Store the payload and show confirmation
     setPendingUpdatePayload(payload)
@@ -287,7 +501,7 @@ function App() {
         .from('accounts')
         .update(pendingUpdatePayload)
         .eq('id', editingAccount.id)
-        .select('id, village, phone')
+        .select('id, village, phone, remarks, cif_number')
 
       if (updateError) throw updateError
 
@@ -300,7 +514,15 @@ function App() {
       // Update the local state with the new payload
       setAccounts((prev) =>
         prev.map((acc) =>
-          acc.id === editingAccount.id ? { ...acc, village: updatedRow.village, phone: updatedRow.phone } : acc
+          acc.id === editingAccount.id
+            ? {
+                ...acc,
+                village: updatedRow.village,
+                phone: updatedRow.phone,
+                remarks: updatedRow.remarks,
+                cif_number: updatedRow.cif_number
+              }
+            : acc
         )
       )
       setFocusedAccountId(editingAccount.id)
@@ -345,8 +567,19 @@ function App() {
     setMarkPaidAccount(account)
   }
 
-  async function handleConfirmMarkPaid(quantity) {
+  async function handleConfirmMarkPaid(paymentDetails) {
     if (!markPaidAccount) return
+
+    const quantity = Number(paymentDetails?.quantity || 0)
+    const selectedMonths = Array.isArray(paymentDetails?.selectedMonths)
+      ? paymentDetails.selectedMonths
+      : []
+    const paymentMode = paymentDetails?.paymentMode === 'ONLINE' ? 'ONLINE' : 'CASH'
+
+    if (quantity < 1) {
+      setError('Please select at least one month.')
+      return
+    }
 
     setSubmitting(true)
     setError('')
@@ -365,6 +598,7 @@ function App() {
           account_id: markPaidAccount.id,
           amount: totalAmount,
           emis_paid: quantity,
+          payment_mode: paymentMode,
           payment_date: todayIso,
           month: currentMonth,
           year: currentYear
@@ -376,13 +610,13 @@ function App() {
       const [monthRes, todayRes] = await Promise.all([
         supabase
           .from('emi_collections')
-          .select('id, account_id, amount, emis_paid, payment_date, month, year, accounts(name, village, emi_amount, next_emi_date)')
+          .select('id, account_id, amount, emis_paid, payment_mode, payment_date, month, year, accounts(name, village, emi_amount, next_emi_date)')
           .eq('month', currentMonth)
           .eq('year', currentYear)
           .order('payment_date', { ascending: false }),
         supabase
           .from('emi_collections')
-          .select('id, account_id, amount, emis_paid, payment_date, accounts(name, village, phone, emi_amount, next_emi_date)')
+          .select('id, account_id, amount, emis_paid, payment_mode, payment_date, accounts(name, village, phone, emi_amount, next_emi_date)')
           .eq('payment_date', todayIso)
       ])
 
@@ -396,6 +630,8 @@ function App() {
       setLastPaymentConfirm({
         account: markPaidAccount,
         quantity,
+        paymentMode,
+        selectedMonths,
         dueAmount,
         totalAmount
       })
@@ -476,7 +712,7 @@ function App() {
     try {
       const { data, error: fetchError } = await supabase
         .from('emi_collections')
-        .select('id, account_id, amount, emis_paid, payment_date, month, year, accounts(name, village, emi_amount, next_emi_date)')
+        .select('id, account_id, amount, emis_paid, payment_mode, payment_date, month, year, accounts(name, village, emi_amount, next_emi_date)')
         .eq('month', month)
         .eq('year', year)
         .order('payment_date', { ascending: false })
@@ -543,7 +779,28 @@ function App() {
     setShowEmiDueList(false)
   }
 
+  function handleViewVillages() {
+    setShowVillagesList(true)
+  }
+
+  function handleCloseVillages() {
+    setShowVillagesList(false)
+  }
+
   function renderScreen() {
+    if (showVillagesList) {
+      return (
+        <VillagesScreen
+          villages={villagesWithCounts}
+          submitting={villageSubmitting}
+          onAddVillage={handleAddVillage}
+          onUpdateVillage={handleUpdateVillage}
+          onDeleteVillage={handleDeleteVillage}
+          onClose={handleCloseVillages}
+        />
+      )
+    }
+
     if (showMonthlyPayments) {
       return (
         <MonthlyPaymentsScreen
@@ -570,7 +827,7 @@ function App() {
         <AccountsListScreen
           accounts={accountsListType === 'closed' ? closedAccounts : activeAccounts}
           title={accountsListType === 'closed' ? 'Closed Accounts' : 'All Active Accounts'}
-          showActions={accountsListType !== 'closed'}
+          showActions={true}
           focusedAccountId={focusedAccountId}
           onEdit={handleStartEdit}
           onDelete={handleStartDelete}
@@ -587,6 +844,7 @@ function App() {
           onViewClosedAccounts={handleViewClosedAccounts}
           onViewMonthlyPayments={handleViewMonthlyPayments}
           onViewEmiDueList={handleViewEmiDueList}
+          onViewVillages={handleViewVillages}
         />
       )
     }
@@ -597,6 +855,7 @@ function App() {
           accounts={activeAccounts}
           paidAccountIds={paidAccountIds}
           onMarkPaidClick={handleMarkPaidClick}
+          onEditAccount={handleStartEdit}
         />
       )
     }
@@ -605,6 +864,7 @@ function App() {
       return (
         <SummaryScreen
           accounts={activeAccounts}
+          closedAccountsCount={closedAccounts.length}
           currentMonthCollections={activeCurrentMonthCollections}
           todayPayments={activeTodayPayments}
           allCollections={activeAllCollections}
@@ -664,6 +924,7 @@ function App() {
       {showEditModal && editingAccount && (
         <EditAccountModalScreen
           account={editingAccount}
+          villages={villages}
           onSave={handleUpdateAccountSubmit}
           onCancel={handleCancelEdit}
           submitting={submitting}
@@ -693,6 +954,8 @@ function App() {
         <PaymentConfirmationModal
           account={lastPaymentConfirm.account}
           quantity={lastPaymentConfirm.quantity}
+          paymentMode={lastPaymentConfirm.paymentMode}
+          selectedMonths={lastPaymentConfirm.selectedMonths}
           dueAmount={lastPaymentConfirm.dueAmount}
           totalAmount={lastPaymentConfirm.totalAmount}
           onClose={handleClosePaymentConfirm}
@@ -709,7 +972,7 @@ function App() {
         />
       )}
 
-      {!showAccountsList && !showMonthlyPayments && !showEmiDueList && !showEditModal && !deleteConfirmAccount && !markPaidAccount && !lastPaymentConfirm && !undoPaymentGroup && (
+      {!showAccountsList && !showMonthlyPayments && !showEmiDueList && !showVillagesList && !showEditModal && !deleteConfirmAccount && !markPaidAccount && !lastPaymentConfirm && !undoPaymentGroup && (
         <nav className="bottom-nav">
           {screens.map((screen) => (
             <button

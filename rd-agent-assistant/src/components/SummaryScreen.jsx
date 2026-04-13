@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { getEmiStatus, getOutstandingEmiMonths, getPaymentBreakdown } from '../lib/utils'
+import { getEmiStatus, getPaymentBreakdown } from '../lib/utils'
 
 function formatCurrency(amount) {
   return new Intl.NumberFormat('en-IN', {
@@ -81,7 +81,7 @@ function BarChart({ items, maxValue }) {
   )
 }
 
-function SummaryScreen({ accounts, currentMonthCollections, todayPayments, allCollections, paidAccountIds }) {
+function SummaryScreen({ accounts, currentMonthCollections, todayPayments, allCollections, paidAccountIds, closedAccountsCount = 0 }) {
   const [analysisType, setAnalysisType] = useState('account')
   const [rangeType, setRangeType] = useState('current-month')
   const now = new Date()
@@ -146,27 +146,21 @@ function SummaryScreen({ accounts, currentMonthCollections, todayPayments, allCo
     const uniqueVillages = new Set(accounts.map((a) => (a.village || '').trim()).filter(Boolean)).size
     const hasVillage = (account) => Boolean((account?.village || '').trim())
     const hasMobile = (account) => /^\d{10}$/.test(String(account?.phone || '').trim()) && String(account?.phone || '').trim() !== '0'
-
-    const totalEmiAmount = accounts.reduce((sum, account) => sum + Number(account.emi_amount || 0), 0)
-    const averageEmiAmount = totalAccounts > 0 ? totalEmiAmount / totalAccounts : 0
+    const hasCif = (account) => Boolean(String(account?.cif_number || '').trim())
 
     const overdueAccounts = accounts.filter((account) => getEmiStatus(account.next_emi_date).status === 'PENDING').length
     const paidThisMonthCount = paidAccountIds.size
     const paymentCoverage = totalAccounts > 0 ? (paidThisMonthCount / totalAccounts) * 100 : 0
-
-    const totalOutstanding = accounts.reduce((sum, account) => {
-      const emiAmount = Number(account.emi_amount || 0)
-      const monthsDue = getOutstandingEmiMonths(account.next_emi_date, paidAccountIds.has(account.id))
-      return sum + emiAmount * monthsDue
-    }, 0)
 
     const accountsWithVillage = accounts.filter(hasVillage).length
     const accountsWithMobile = accounts.filter(hasMobile).length
     const accountsWithVillageAndMobile = accounts.filter(
       (account) => hasVillage(account) && hasMobile(account)
     ).length
+    const accountsWithCif = accounts.filter(hasCif).length
     const missingVillageCount = totalAccounts - accountsWithVillage
     const missingMobileCount = totalAccounts - accountsWithMobile
+    const missingCifCount = totalAccounts - accountsWithCif
 
     const villageDistribution = accounts.reduce((map, account) => {
       const village = (account?.village || '').trim() || 'Not Set'
@@ -180,28 +174,45 @@ function SummaryScreen({ accounts, currentMonthCollections, todayPayments, allCo
 
     return {
       totalAccounts,
+      closedAccountsCount,
       uniqueVillages,
-      averageEmiAmount,
       overdueAccounts,
       paidThisMonthCount,
       paymentCoverage,
-      totalOutstanding,
       accountsWithVillage,
       accountsWithMobile,
       accountsWithVillageAndMobile,
+      accountsWithCif,
       missingVillageCount,
       missingMobileCount,
+      missingCifCount,
       topVillageByAccounts,
       topVillageByAccountsCount
     }
-  }, [accounts, paidAccountIds])
+  }, [accounts, closedAccountsCount, paidAccountIds])
 
   const paymentSummary = useMemo(() => {
     const todayTotal = todayPayments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
     const todayDue = todayPayments.reduce((sum, payment) => sum + getPaymentBreakdown(payment).dueAmount, 0)
+    const todayCashTotal = todayPayments.reduce(
+      (sum, payment) => sum + ((String(payment.payment_mode || 'CASH').toUpperCase() === 'CASH') ? Number(payment.amount || 0) : 0),
+      0
+    )
+    const todayOnlineTotal = todayPayments.reduce(
+      (sum, payment) => sum + ((String(payment.payment_mode || 'CASH').toUpperCase() === 'ONLINE') ? Number(payment.amount || 0) : 0),
+      0
+    )
 
     const monthTotal = filteredCollections.reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
     const monthDue = filteredCollections.reduce((sum, payment) => sum + getPaymentBreakdown(payment).dueAmount, 0)
+    const monthCashTotal = filteredCollections.reduce(
+      (sum, payment) => sum + ((String(payment.payment_mode || 'CASH').toUpperCase() === 'CASH') ? Number(payment.amount || 0) : 0),
+      0
+    )
+    const monthOnlineTotal = filteredCollections.reduce(
+      (sum, payment) => sum + ((String(payment.payment_mode || 'CASH').toUpperCase() === 'ONLINE') ? Number(payment.amount || 0) : 0),
+      0
+    )
 
     const totalEmisCollected = filteredCollections.reduce(
       (sum, payment) => sum + Number(payment.emis_paid || 1),
@@ -239,8 +250,12 @@ function SummaryScreen({ accounts, currentMonthCollections, todayPayments, allCo
     return {
       todayTotal,
       todayDue,
+      todayCashTotal,
+      todayOnlineTotal,
       monthTotal,
       monthDue,
+      monthCashTotal,
+      monthOnlineTotal,
       totalEmisCollected,
       paymentCountThisMonth,
       averageTicketSize,
@@ -322,12 +337,12 @@ function SummaryScreen({ accounts, currentMonthCollections, todayPayments, allCo
               <span>{accountSummary.totalAccounts}</span>
             </div>
             <div className="detail-row">
-              <span className="label">Villages Covered:</span>
-              <span>{accountSummary.uniqueVillages}</span>
+              <span className="label">Closed Accounts:</span>
+              <span>{accountSummary.closedAccountsCount}</span>
             </div>
             <div className="detail-row">
-              <span className="label">Average EMI Amount:</span>
-              <span>₹ {formatCurrency(accountSummary.averageEmiAmount)}</span>
+              <span className="label">Villages Covered:</span>
+              <span>{accountSummary.uniqueVillages}</span>
             </div>
             <div className="detail-row">
               <span className="label">Overdue Accounts:</span>
@@ -340,10 +355,6 @@ function SummaryScreen({ accounts, currentMonthCollections, todayPayments, allCo
               </span>
             </div>
             <div className="detail-row">
-              <span className="label">Total Outstanding EMI:</span>
-              <span>₹ {formatCurrency(accountSummary.totalOutstanding)}</span>
-            </div>
-            <div className="detail-row">
               <span className="label">Accounts With Village:</span>
               <span>{accountSummary.accountsWithVillage}</span>
             </div>
@@ -352,8 +363,8 @@ function SummaryScreen({ accounts, currentMonthCollections, todayPayments, allCo
               <span>{accountSummary.accountsWithMobile}</span>
             </div>
             <div className="detail-row">
-              <span className="label">Village + Mobile Linked:</span>
-              <span>{accountSummary.accountsWithVillageAndMobile}</span>
+              <span className="label">Accounts With CIF:</span>
+              <span>{accountSummary.accountsWithCif}</span>
             </div>
             <div className="detail-row">
               <span className="label">Missing Village:</span>
@@ -362,6 +373,10 @@ function SummaryScreen({ accounts, currentMonthCollections, todayPayments, allCo
             <div className="detail-row">
               <span className="label">Missing Mobile:</span>
               <span>{accountSummary.missingMobileCount}</span>
+            </div>
+            <div className="detail-row">
+              <span className="label">Missing CIF:</span>
+              <span>{accountSummary.missingCifCount}</span>
             </div>
             <div className="detail-row">
               <span className="label">Top Village By Accounts:</span>
@@ -459,12 +474,28 @@ function SummaryScreen({ accounts, currentMonthCollections, todayPayments, allCo
                 <span>₹ {formatCurrency(paymentSummary.todayTotal)}</span>
               </div>
               <div className="detail-row">
+                <span className="label">Cash Collected Today:</span>
+                <span>₹ {formatCurrency(paymentSummary.todayCashTotal)}</span>
+              </div>
+              <div className="detail-row">
+                <span className="label">Online Collected Today:</span>
+                <span>₹ {formatCurrency(paymentSummary.todayOnlineTotal)}</span>
+              </div>
+              <div className="detail-row">
                 <span className="label">Due Collected Today:</span>
                 <span>₹ {formatCurrency(paymentSummary.todayDue)}</span>
               </div>
               <div className="detail-row">
                 <span className="label">Collected ({periodLabel}):</span>
                 <span>₹ {formatCurrency(paymentSummary.monthTotal)}</span>
+              </div>
+              <div className="detail-row">
+                <span className="label">Cash Collected ({periodLabel}):</span>
+                <span>₹ {formatCurrency(paymentSummary.monthCashTotal)}</span>
+              </div>
+              <div className="detail-row">
+                <span className="label">Online Collected ({periodLabel}):</span>
+                <span>₹ {formatCurrency(paymentSummary.monthOnlineTotal)}</span>
               </div>
               <div className="detail-row">
                 <span className="label">Due Collected ({periodLabel}):</span>

@@ -117,6 +117,20 @@ export function getMonthYearFromDate(dateString) {
 }
 
 /**
+ * Calculate completed month gap between account opening and next EMI date.
+ * Used to derive paid months from schedule progression.
+ */
+export function getMonthsBetweenOpeningAndNextEmi(openingDate, nextEmiDate) {
+  const opening = getMonthYearFromDate(openingDate)
+  const nextEmi = getMonthYearFromDate(nextEmiDate)
+
+  if (!opening || !nextEmi) return 0
+
+  const monthGap = (nextEmi.year - opening.year) * 12 + (nextEmi.month - opening.month)
+  return Math.max(0, monthGap)
+}
+
+/**
  * Calculate EMI status based on next_emi_date
  * Returns: { status: 'REGULAR' | 'PENDING' | 'ADVANCE', count: number }
  */

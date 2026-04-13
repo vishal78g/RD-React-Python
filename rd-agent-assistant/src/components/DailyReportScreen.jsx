@@ -30,6 +30,42 @@ function groupByAccount(payments) {
   return Object.values(grouped)
 }
 
+function getMonthChipsForPayment(payment) {
+  const nextEmiDateRaw = payment?.accounts?.next_emi_date
+  const nextEmiDate = new Date(nextEmiDateRaw)
+  if (Number.isNaN(nextEmiDate.getTime())) return []
+
+  const emisPaid = Math.max(1, Number(payment?.emis_paid || 1))
+  const start = new Date(nextEmiDate.getFullYear(), nextEmiDate.getMonth(), 1)
+
+  return Array.from({ length: emisPaid }).map((_, index) => {
+    const monthDate = new Date(start)
+    monthDate.setMonth(start.getMonth() + index)
+
+    const month = monthDate.getMonth() + 1
+    const year = monthDate.getFullYear()
+    const label = monthDate.toLocaleString('en-US', { month: 'short' }).toUpperCase()
+
+    return {
+      key: `${year}-${String(month).padStart(2, '0')}`,
+      label,
+      year
+    }
+  })
+}
+
+function getGroupMonthChips(payments) {
+  const chipsByKey = new Map()
+
+  ;(payments || []).forEach((payment) => {
+    getMonthChipsForPayment(payment).forEach((chip) => {
+      chipsByKey.set(chip.key, chip)
+    })
+  })
+
+  return Array.from(chipsByKey.values()).sort((a, b) => a.key.localeCompare(b.key))
+}
+
 function DailyReportScreen({
   payments,
   onUndoPayment,
@@ -67,6 +103,14 @@ function DailyReportScreen({
   // --- Today tab ---
   const groupedToday = useMemo(() => groupByAccount(payments), [payments])
   const totalToday = groupedToday.reduce((sum, g) => sum + g.totalAmount, 0)
+  const todayCashTotal = payments.reduce(
+    (sum, payment) => sum + ((String(payment.payment_mode || 'CASH').toUpperCase() === 'CASH') ? Number(payment.amount || 0) : 0),
+    0
+  )
+  const todayOnlineTotal = payments.reduce(
+    (sum, payment) => sum + ((String(payment.payment_mode || 'CASH').toUpperCase() === 'ONLINE') ? Number(payment.amount || 0) : 0),
+    0
+  )
 
   // --- Monthly tab ---
   // While reportMonthlyPayments is null (not yet fetched), show currentMonthPayments
@@ -82,6 +126,14 @@ function DailyReportScreen({
   // Group monthly payments by account for undo support
   const groupedMonthly = useMemo(() => groupByAccount(monthlySource), [monthlySource])
   const totalMonthly = groupedMonthly.reduce((sum, g) => sum + g.totalAmount, 0)
+  const monthlyCashTotal = monthlySource.reduce(
+    (sum, payment) => sum + ((String(payment.payment_mode || 'CASH').toUpperCase() === 'CASH') ? Number(payment.amount || 0) : 0),
+    0
+  )
+  const monthlyOnlineTotal = monthlySource.reduce(
+    (sum, payment) => sum + ((String(payment.payment_mode || 'CASH').toUpperCase() === 'ONLINE') ? Number(payment.amount || 0) : 0),
+    0
+  )
 
   const selectedMonthLabel = `${MONTHS[pickerMonth - 1]} ${pickerYear}`
 
@@ -111,6 +163,8 @@ function DailyReportScreen({
           <article className="metric-card total-card">
             <p className="metric-label">Total Collected Today</p>
             <h3 className="metric-value">₹ {totalToday.toFixed(2)}</h3>
+            <p className="metric-note">Cash: ₹ {todayCashTotal.toFixed(2)}</p>
+            <p className="metric-note">Online: ₹ {todayOnlineTotal.toFixed(2)}</p>
           </article>
 
           <div className="list-stack">
@@ -128,6 +182,15 @@ function DailyReportScreen({
                   )}
                 </div>
                 <p className="amount">₹ {group.totalAmount.toFixed(2)}</p>
+                {getGroupMonthChips(group.payments).length > 0 ? (
+                  <div className="report-month-chips">
+                    {getGroupMonthChips(group.payments).map((chip) => (
+                      <span className="report-month-chip" key={chip.key} title={`${chip.label} ${chip.year}`}>
+                        {chip.label}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="account-actions">
                   <button className="btn btn-secondary" onClick={() => onUndoPayment(group)}>
                     Undo Payment
@@ -184,11 +247,14 @@ function DailyReportScreen({
               <article className="metric-card total-card">
                 <p className="metric-label">Total Collected — {selectedMonthLabel}</p>
                 <h3 className="metric-value">₹ {totalMonthly.toFixed(2)}</h3>
+                <p className="metric-note">Cash: ₹ {monthlyCashTotal.toFixed(2)}</p>
+                <p className="metric-note">Online: ₹ {monthlyOnlineTotal.toFixed(2)}</p>
               </article>
 
               <div className="list-stack">
                 {groupedMonthly.map((group) => {
                   const canUndo = isCurrentMonthSelected
+                  const monthChips = getGroupMonthChips(group.payments)
                   return (
                     <article className="card payment-group-card" key={group.accountId}>
                       <div className="payment-group-header">
@@ -210,6 +276,15 @@ function DailyReportScreen({
                         <span>{formatDateLong(group.payments[0]?.payment_date)}</span>
                       </div>
                       <p className="amount">₹ {group.totalAmount.toFixed(2)}</p>
+                      {monthChips.length > 0 ? (
+                        <div className="report-month-chips">
+                          {monthChips.map((chip) => (
+                            <span className="report-month-chip" key={chip.key} title={`${chip.label} ${chip.year}`}>
+                              {chip.label}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
                       {canUndo && (
                         <div className="account-actions">
                           <button
