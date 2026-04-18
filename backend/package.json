@@ -4,6 +4,9 @@
   "version": "1.0.0",
   "type": "module",
   "main": "index.js",
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
     "dev": "cross-env APP_ENV=local node server.js",
     "start": "cross-env APP_ENV=production node server.js"
