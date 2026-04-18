@@ -1,0 +1,20 @@
+{
+  "name": "rd-agent-assistant-backend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "dev": "cross-env APP_ENV=local node server.js",
+    "start": "cross-env APP_ENV=production node server.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.54.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3"
+  }
+}
