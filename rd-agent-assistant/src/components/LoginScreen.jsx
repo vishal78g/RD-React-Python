@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import rdLogo from '../public/images/rdLogo.png'
 
-function LoginScreen({ onLogin, authError }) {
+function LoginScreen({ onLogin, authError, submitting }) {
   const [pin, setPin] = useState('')
 
   function handleSubmit(event) {
@@ -39,8 +39,8 @@ function LoginScreen({ onLogin, authError }) {
 
           {authError ? <p className="error-text">⚠ {authError}</p> : null}
 
-          <button className="btn btn-primary" type="submit" disabled={pin.length !== 4}>
-            Login
+          <button className="btn btn-primary" type="submit" disabled={pin.length !== 4 || submitting}>
+            {submitting ? 'Logging in...' : 'Login'}
           </button>
         </form>
       </article>

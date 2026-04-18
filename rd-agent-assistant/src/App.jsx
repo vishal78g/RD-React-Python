@@ -13,7 +13,7 @@ import LoginScreen from './components/LoginScreen'
 import EmiDueListScreen from './components/EmiDueListScreen'
 import SummaryScreen from './components/SummaryScreen'
 import VillagesScreen from './components/VillagesScreen'
-import { supabase } from './lib/supabase'
+import { api, setApiAuthTokenProvider } from './lib/api'
 import {
   getMonthsBetweenOpeningAndNextEmi,
   getOutstandingEmiMonths,
@@ -33,7 +33,6 @@ async function cacheImageInBrowser(imageUrl) {
 }
 
 const AUTH_STORAGE_KEY = 'rd_agent_auth'
-const ONE_DAY_MS = 24 * 60 * 60 * 1000
 
 const screens = [
   { key: 'dashboard', label: 'Dashboard' },
@@ -43,11 +42,12 @@ const screens = [
 ]
 
 function App() {
-  const configuredPin = import.meta.env.VITE_APP_PIN || '1234'
   const [activeScreen, setActiveScreen] = useState('dashboard')
   const [authLoading, setAuthLoading] = useState(true)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [accessToken, setAccessToken] = useState('')
   const [authError, setAuthError] = useState('')
+  const [authSubmitting, setAuthSubmitting] = useState(false)
   const [showAccountsList, setShowAccountsList] = useState(false)
   const [accountsListType, setAccountsListType] = useState('active')
   const [showMonthlyPayments, setShowMonthlyPayments] = useState(false)
@@ -223,6 +223,10 @@ function App() {
   }, [])
 
   useEffect(() => {
+    setApiAuthTokenProvider(() => accessToken)
+  }, [accessToken])
+
+  useEffect(() => {
     try {
       const raw = localStorage.getItem(AUTH_STORAGE_KEY)
       if (!raw) {
@@ -231,11 +235,17 @@ function App() {
       }
 
       const parsed = JSON.parse(raw)
-      if (parsed?.expiresAt && parsed.expiresAt > Date.now()) {
-        setIsAuthenticated(true)
-      } else {
+      const token = String(parsed?.token || '')
+      const expiresAt = Number(parsed?.expiresAt || 0)
+
+      if (!token || !expiresAt || expiresAt <= Date.now()) {
         localStorage.removeItem(AUTH_STORAGE_KEY)
+        setAuthLoading(false)
+        return
       }
+
+      setAccessToken(token)
+      setIsAuthenticated(true)
     } catch {
       localStorage.removeItem(AUTH_STORAGE_KEY)
     } finally {
@@ -249,61 +259,35 @@ function App() {
     }
   }, [isAuthenticated])
 
-  async function syncVillagesFromAccounts(accountsData, villagesData) {
-    const existingVillageNames = new Set(
-      (villagesData || [])
-        .map((village) => (village.village_name || '').trim())
-        .filter(Boolean)
-    )
+  async function handleLogin(pin) {
+    setAuthError('')
+    setAuthSubmitting(true)
 
-    const missingVillageNames = [...new Set(
-      (accountsData || [])
-        .map((account) => (account.village || '').trim())
-        .filter(Boolean)
-    )].filter((villageName) => !existingVillageNames.has(villageName))
+    try {
+      const session = await api.loginWithPin(pin)
+      const token = String(session?.token || '')
+      const expiresAt = Number(session?.expiresAt || 0)
 
-    if (missingVillageNames.length === 0) {
-      return villagesData || []
-    }
+      if (!token) {
+        throw new Error('No access token returned from login.')
+      }
 
-    const { error: upsertError } = await supabase
-      .from('villages')
-      .upsert(
-        missingVillageNames.map((villageName) => ({ village_name: villageName })),
-        { onConflict: 'village_name', ignoreDuplicates: true }
+      localStorage.setItem(
+        AUTH_STORAGE_KEY,
+        JSON.stringify({
+          token,
+          expiresAt
+        })
       )
 
-    if (upsertError) {
-      return villagesData || []
+      setAccessToken(token)
+      setIsAuthenticated(true)
+      setActiveScreen('dashboard')
+    } catch (loginError) {
+      setAuthError(loginError.message || 'Login failed.')
+    } finally {
+      setAuthSubmitting(false)
     }
-
-    const { data: refreshedVillages, error: refreshedVillagesError } = await supabase
-      .from('villages')
-      .select('id, village_name')
-      .order('village_name', { ascending: true })
-
-    if (refreshedVillagesError) {
-      return villagesData || []
-    }
-
-    return refreshedVillages || []
-  }
-
-  function handleLogin(pin) {
-    setAuthError('')
-
-    if (pin !== configuredPin) {
-      setAuthError('Invalid PIN')
-      return
-    }
-
-    const authState = {
-      expiresAt: Date.now() + ONE_DAY_MS
-    }
-
-    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authState))
-    setIsAuthenticated(true)
-    setActiveScreen('dashboard')
   }
 
   async function loadInitialData() {
@@ -311,39 +295,28 @@ function App() {
     setError('')
 
     try {
-      const [accountsRes, villagesRes, monthRes, todayRes, allCollectionsRes] = await Promise.all([
-        supabase.from('accounts').select('*').order('created_at', { ascending: false }),
-        supabase.from('villages').select('id, village_name').order('village_name', { ascending: true }),
-        supabase
-          .from('emi_collections')
-          .select('id, account_id, amount, emis_paid, payment_mode, payment_date, month, year, accounts(name, village, emi_amount, next_emi_date)')
-          .eq('month', currentMonth)
-          .eq('year', currentYear)
-          .order('payment_date', { ascending: false }),
-        supabase
-          .from('emi_collections')
-          .select('id, account_id, amount, emis_paid, payment_mode, payment_date, accounts(name, village, phone, emi_amount, next_emi_date)')
-          .eq('payment_date', todayIso),
-        supabase
-          .from('emi_collections')
-          .select('id, account_id, amount, emis_paid, payment_mode, payment_date, month, year, accounts(name, village, phone, emi_amount, next_emi_date)')
-          .order('payment_date', { ascending: false })
-      ])
+      const data = await api.getBootstrap({
+        month: currentMonth,
+        year: currentYear,
+        today: todayIso
+      })
 
-      if (accountsRes.error) throw accountsRes.error
-        if (villagesRes.error) throw villagesRes.error
-      if (monthRes.error) throw monthRes.error
-      if (todayRes.error) throw todayRes.error
-      if (allCollectionsRes.error) throw allCollectionsRes.error
-
-        const syncedVillages = await syncVillagesFromAccounts(accountsRes.data || [], villagesRes.data || [])
-
-      setAccounts(accountsRes.data || [])
-        setVillages(syncedVillages)
-      setCurrentMonthCollections(monthRes.data || [])
-      setTodayPayments(todayRes.data || [])
-      setAllCollections(allCollectionsRes.data || [])
+      setAccounts(data.accounts || [])
+      setVillages(data.villages || [])
+      setCurrentMonthCollections(data.currentMonthCollections || [])
+      setTodayPayments(data.todayPayments || [])
+      setAllCollections(data.allCollections || [])
     } catch (loadError) {
+      const errorMessage = String(loadError.message || '')
+      if (errorMessage.toLowerCase().includes('unauthorized')) {
+        localStorage.removeItem(AUTH_STORAGE_KEY)
+        setAccessToken('')
+        setIsAuthenticated(false)
+        setAuthError('Session expired. Please login again.')
+        setError('')
+        return
+      }
+
       setError(loadError.message || 'Failed to load data.')
     } finally {
       setLoading(false)
@@ -355,13 +328,7 @@ function App() {
     setError('')
 
     try {
-      const { data, error: insertError } = await supabase
-        .from('accounts')
-        .insert(payload)
-        .select('*')
-        .single()
-
-      if (insertError) throw insertError
+      const data = await api.addAccount(payload)
 
       setAccounts((prev) => [data, ...prev])
       setActiveScreen('dashboard')
@@ -383,13 +350,7 @@ function App() {
     setError('')
 
     try {
-      const { data, error: insertError } = await supabase
-        .from('villages')
-        .insert({ village_name: trimmedName })
-        .select('id, village_name')
-        .single()
-
-      if (insertError) throw insertError
+      const data = await api.addVillage(trimmedName)
 
       setVillages((prev) => [...prev, data])
       return true
@@ -416,14 +377,7 @@ function App() {
     setError('')
 
     try {
-      const { data: updatedVillage, error: updateError } = await supabase
-        .from('villages')
-        .update({ village_name: trimmedName })
-        .eq('id', villageId)
-        .select('id, village_name')
-        .single()
-
-      if (updateError) throw updateError
+      const updatedVillage = await api.updateVillage(villageId, trimmedName)
 
       setVillages((prev) =>
         prev.map((village) => (village.id === villageId ? updatedVillage : village))
@@ -467,12 +421,7 @@ function App() {
     setError('')
 
     try {
-      const { error: deleteError } = await supabase
-        .from('villages')
-        .delete()
-        .eq('id', village.id)
-
-      if (deleteError) throw deleteError
+      await api.deleteVillage(village.id)
 
       setVillages((prev) => prev.filter((item) => item.id !== village.id))
       return true
@@ -497,19 +446,7 @@ function App() {
     setError('')
 
     try {
-      const { data: updatedRows, error: updateError } = await supabase
-        .from('accounts')
-        .update(pendingUpdatePayload)
-        .eq('id', editingAccount.id)
-        .select('id, village, phone, remarks, cif_number')
-
-      if (updateError) throw updateError
-
-      if (!updatedRows || updatedRows.length === 0) {
-        throw new Error('Update blocked: no row updated in DB. Check RLS UPDATE policy for table accounts.')
-      }
-
-      const updatedRow = updatedRows[0]
+      const updatedRow = await api.updateAccount(editingAccount.id, pendingUpdatePayload)
 
       // Update the local state with the new payload
       setAccounts((prev) =>
@@ -543,12 +480,7 @@ function App() {
     setError('')
 
     try {
-      const { error: deleteError } = await supabase
-        .from('accounts')
-        .delete()
-        .eq('id', deleteConfirmAccount.id)
-
-      if (deleteError) throw deleteError
+      await api.deleteAccount(deleteConfirmAccount.id)
 
       setAccounts((prev) => prev.filter((acc) => acc.id !== deleteConfirmAccount.id))
       setCurrentMonthCollections((prev) =>
@@ -592,39 +524,24 @@ function App() {
       })
 
       // Insert ONE record with emis_paid count and total amount
-      const { error: insertError } = await supabase
-        .from('emi_collections')
-        .insert({
-          account_id: markPaidAccount.id,
-          amount: totalAmount,
-          emis_paid: quantity,
-          payment_mode: paymentMode,
-          payment_date: todayIso,
-          month: currentMonth,
-          year: currentYear
-        })
-
-      if (insertError) throw insertError
+      await api.addCollection({
+        account_id: markPaidAccount.id,
+        amount: totalAmount,
+        emis_paid: quantity,
+        payment_mode: paymentMode,
+        payment_date: todayIso,
+        month: currentMonth,
+        year: currentYear
+      })
 
       // Reload data to reflect changes
-      const [monthRes, todayRes] = await Promise.all([
-        supabase
-          .from('emi_collections')
-          .select('id, account_id, amount, emis_paid, payment_mode, payment_date, month, year, accounts(name, village, emi_amount, next_emi_date)')
-          .eq('month', currentMonth)
-          .eq('year', currentYear)
-          .order('payment_date', { ascending: false }),
-        supabase
-          .from('emi_collections')
-          .select('id, account_id, amount, emis_paid, payment_mode, payment_date, accounts(name, village, phone, emi_amount, next_emi_date)')
-          .eq('payment_date', todayIso)
+      const [monthData, todayData] = await Promise.all([
+        api.getMonthlyCollections(currentMonth, currentYear),
+        api.getDailyCollections(todayIso)
       ])
 
-      if (monthRes.error) throw monthRes.error
-      if (todayRes.error) throw todayRes.error
-
-      setCurrentMonthCollections(monthRes.data || [])
-      setTodayPayments(todayRes.data || [])
+      setCurrentMonthCollections(monthData || [])
+      setTodayPayments(todayData || [])
 
       // Show confirmation modal
       setLastPaymentConfirm({
@@ -667,17 +584,11 @@ function App() {
       }
 
       // Delete exact payment records for today and verify deleted rows
-      const { data: deletedRows, error: deleteError } = await supabase
-        .from('emi_collections')
-        .delete()
-        .in('id', paymentIdsToDelete)
-        .select('id')
-
-      if (deleteError) throw deleteError
+      const deletedRows = await api.deleteCollectionsByIds(paymentIdsToDelete)
 
       const deletedIds = new Set((deletedRows || []).map((row) => row.id))
       if (deletedIds.size === 0) {
-        throw new Error('Undo failed: no rows were deleted in database. Check RLS delete policy and filters.')
+        throw new Error('Undo failed: no rows were deleted in database.')
       }
 
       // Update today's payments
@@ -710,13 +621,7 @@ function App() {
     setReportMonthlyLoading(true)
     setError('')
     try {
-      const { data, error: fetchError } = await supabase
-        .from('emi_collections')
-        .select('id, account_id, amount, emis_paid, payment_mode, payment_date, month, year, accounts(name, village, emi_amount, next_emi_date)')
-        .eq('month', month)
-        .eq('year', year)
-        .order('payment_date', { ascending: false })
-      if (fetchError) throw fetchError
+      const data = await api.getMonthlyCollections(month, year)
       setReportMonthlyPayments(data || [])
     } catch (fetchError) {
       setError(fetchError.message || 'Could not load monthly payments.')
@@ -901,7 +806,7 @@ function App() {
     return (
       <div className="app-shell">
         <main className="app-main">
-          <LoginScreen onLogin={handleLogin} authError={authError} />
+          <LoginScreen onLogin={handleLogin} authError={authError} submitting={authSubmitting} />
         </main>
       </div>
     )
