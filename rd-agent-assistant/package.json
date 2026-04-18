@@ -3,18 +3,27 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "main": "index.js",
   "scripts": {
     "dev": "vite",
+    "dev:server": "cross-env APP_ENV=local node backend/server.js",
+    "dev:full": "concurrently \"npm run dev\" \"npm run dev:server\"",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start:server": "cross-env APP_ENV=production node backend/server.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.54.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.2",
+    "concurrently": "^9.0.1",
+    "cross-env": "^7.0.3",
     "vite": "^5.4.2"
   }
 }
