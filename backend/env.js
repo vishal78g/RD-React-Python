@@ -5,7 +5,7 @@ import dotenv from 'dotenv'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
-const projectRoot = path.resolve(__dirname, '..')
+const projectRoot = __dirname
 
 const appEnv = String(process.env.APP_ENV || process.env.NODE_ENV || 'local').toLowerCase()
 const modeFile = appEnv === 'production' ? '.env.production' : '.env.local'

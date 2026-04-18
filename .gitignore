@@ -1,8 +1,51 @@
+# ── Python ────────────────────────────────────────────────────────────────────
 .venv/
 __pycache__/
-.env
-Reports/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+
+# PyInstaller build outputs
+python/build/
+python/dist/
+python/*.spec
+
+# Python reports/output
+python/Report/
 *.csv
-README.md
+
+# ── Node / npm ────────────────────────────────────────────────────────────────
 node_modules/
+frontend/node_modules/
+backend/node_modules/
+
+# Build outputs
 dist/
+frontend/dist/
+
+# ── Environment / secrets ─────────────────────────────────────────────────────
+.env
+.env.local
+.env.production
+frontend/.env
+frontend/.env.local
+frontend/.env.production
+backend/.env
+backend/.env.local
+backend/.env.production
+python/.env
+
+# ── Vercel / Netlify ──────────────────────────────────────────────────────────
+.vercel/
+.netlify/
+
+# ── Editor / OS ───────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.user
+Thumbs.db
+.DS_Store
+
