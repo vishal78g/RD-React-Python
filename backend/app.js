@@ -14,18 +14,20 @@ const allowedOrigins = String(process.env.FRONTEND_ORIGIN || 'http://localhost:5
   .map((value) => value.trim())
   .filter(Boolean)
 
-app.use(
-  cors({
-    origin(origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true)
-        return
-      }
-
-      callback(new Error('CORS blocked for this origin.'))
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true)
+      return
     }
-  })
-)
+    // Return null,false instead of an Error — avoids Express treating it as a 500
+    callback(null, false)
+  }
+}
+
+// Handle CORS preflight (OPTIONS) explicitly — required for Vercel serverless
+app.options('*', cors(corsOptions))
+app.use(cors(corsOptions))
 app.use(express.json())
 
 if (!appPin) {
