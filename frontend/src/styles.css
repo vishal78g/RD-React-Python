@@ -83,6 +83,28 @@ body {
   color: #334155;
 }
 
+.btn-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px 14px;
+  min-height: 40px;
+  color: #334155;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.btn-back:hover,
+.btn-back:focus {
+  background: #e2e8f0;
+  outline: none;
+}
+
 .grid-cards {
   display: grid;
   gap: 10px;

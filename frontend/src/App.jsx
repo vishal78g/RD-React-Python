@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import DashboardScreen from './components/DashboardScreen'
 import DailyReportScreen from './components/DailyReportScreen'
 import EmiCollectionScreen from './components/EmiCollectionScreen'
@@ -215,6 +215,37 @@ function App() {
     paidAccountIds,
     villagesWithCounts
   ])
+
+  // Ref to always access latest overlay state inside popstate handler
+  const overlayStateRef = useRef({})
+  overlayStateRef.current = { showVillagesList, showMonthlyPayments, showEmiDueList, showAccountsList }
+
+  // Intercept browser back button so it closes overlays instead of leaving the app
+  useEffect(() => {
+    history.replaceState({ page: 'app' }, '')
+
+    function handlePopState() {
+      // Re-push a state so repeated back presses stay within the app
+      history.pushState({ page: 'app' }, '')
+
+      const { showVillagesList, showMonthlyPayments, showEmiDueList, showAccountsList } =
+        overlayStateRef.current
+
+      if (showVillagesList) {
+        setShowVillagesList(false)
+      } else if (showMonthlyPayments) {
+        setShowMonthlyPayments(false)
+      } else if (showEmiDueList) {
+        setShowEmiDueList(false)
+      } else if (showAccountsList) {
+        setShowAccountsList(false)
+        setAccountsListType('active')
+      }
+    }
+
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [])
 
   useEffect(() => {
     cacheImageInBrowser(rdLogo).catch(() => {

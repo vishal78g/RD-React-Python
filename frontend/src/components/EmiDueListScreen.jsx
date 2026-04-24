@@ -48,8 +48,8 @@ function EmiDueListScreen({ accounts, paidAccountIds, onClose }) {
   return (
     <section>
       <div className="screen-header">
+        <button className="btn-back" onClick={onClose}>&#8592; Back</button>
         <h2>EMI Due List</h2>
-        <button className="btn-close" onClick={onClose}>✕</button>
       </div>
 
       {/* Search */}

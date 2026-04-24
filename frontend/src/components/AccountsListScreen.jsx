@@ -40,10 +40,8 @@ function AccountsListScreen({
   return (
     <section>
       <div className="screen-header">
+        <button className="btn-back" onClick={onClose}>&#8592; Back</button>
         <h2 className="screen-title">{title}</h2>
-        <button className="btn btn-close" onClick={onClose} title="Close">
-          ✕
-        </button>
       </div>
 
       <div className="card search-card">
