@@ -50,10 +50,8 @@ function VillagesScreen({
   return (
     <section>
       <div className="screen-header">
+        <button className="btn-back" onClick={onClose}>&#8592; Back</button>
         <h2 className="screen-title">Villages</h2>
-        <button className="btn btn-close" onClick={onClose} title="Close">
-          ✕
-        </button>
       </div>
 
       <form className="card village-form-card" onSubmit={handleAddVillageSubmit}>

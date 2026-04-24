@@ -16,12 +16,10 @@ function MonthlyPaymentsScreen({ payments, month, year, onClose }) {
   return (
     <section>
       <div className="screen-header">
+        <button className="btn-back" onClick={onClose}>&#8592; Back</button>
         <h2 className="screen-title">
           {monthName} {year}
         </h2>
-        <button className="btn btn-close" onClick={onClose} title="Close">
-          ✕
-        </button>
       </div>
 
       <article className="metric-card total-card">
