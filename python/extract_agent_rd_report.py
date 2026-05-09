@@ -52,7 +52,9 @@ SLOW_MO_MS = int(os.getenv("SLOW_MO_MS", "80"))
 TIMEOUT_MS = int(os.getenv("TIMEOUT_MS", "30000"))
 CAPTCHA_TARGET_LENGTH = int(os.getenv("CAPTCHA_TARGET_LENGTH", "6"))
 CAPTCHA_POLL_INTERVAL_MS = int(os.getenv("CAPTCHA_POLL_INTERVAL_MS", "300"))
-CAPTCHA_WAIT_TIMEOUT_MS = int(os.getenv("CAPTCHA_WAIT_TIMEOUT_MS", "180000"))
+CAPTCHA_WAIT_TIMEOUT_MS = int(os.getenv("CAPTCHA_WAIT_TIMEOUT_MS", "60000"))
+LOGIN_PAGE_LOAD_TIMEOUT_MS = int(os.getenv("LOGIN_PAGE_LOAD_TIMEOUT_MS", "300000"))
+MANUAL_LOGIN_WAIT_TIMEOUT_MS = int(os.getenv("MANUAL_LOGIN_WAIT_TIMEOUT_MS", "60000"))
 CAPTCHA_RETRY_TEXT = os.getenv(
     "CAPTCHA_RETRY_TEXT", "Enter the characters that you see in the picture"
 )
@@ -179,30 +181,37 @@ class ExtractionProgressWindow:
 
 
 def wait_for_captcha_length(page: Page) -> bool:
-    if page.locator(CAPTCHA_IMAGE_SELECTOR).count() > 0:
-        print("CAPTCHA detected. Solve it manually in browser.")
-        if page.locator(CAPTCHA_INPUT_SELECTOR).count() > 0:
-            captcha_input = page.locator(CAPTCHA_INPUT_SELECTOR).first
-            print(
-                f"Waiting for CAPTCHA input length to become {CAPTCHA_TARGET_LENGTH}..."
-            )
+    captcha_image = page.locator(CAPTCHA_IMAGE_SELECTOR).first
+    captcha_input = page.locator(CAPTCHA_INPUT_SELECTOR).first
 
-            elapsed_ms = 0
-            while elapsed_ms < CAPTCHA_WAIT_TIMEOUT_MS:
-                captcha_value = captcha_input.input_value().strip()
-                if len(captcha_value) == CAPTCHA_TARGET_LENGTH:
-                    return True
+    try:
+        captcha_image.wait_for(state="visible", timeout=LOGIN_PAGE_LOAD_TIMEOUT_MS)
+    except PlaywrightTimeoutError:
+        print("Timed out waiting for CAPTCHA image to load.")
+        return False
 
-                page.wait_for_timeout(CAPTCHA_POLL_INTERVAL_MS)
-                elapsed_ms += CAPTCHA_POLL_INTERVAL_MS
+    print("CAPTCHA detected. Solve it manually in browser.")
 
-            print("Timed out waiting for CAPTCHA target length.")
-            return False
-
+    try:
+        captcha_input.wait_for(state="visible", timeout=TIMEOUT_MS)
+    except PlaywrightTimeoutError:
         print("CAPTCHA input selector not found. Solve CAPTCHA manually and press Enter.")
         input()
+        return True
 
-    return True
+    print(f"Waiting up to {CAPTCHA_WAIT_TIMEOUT_MS // 1000} seconds for CAPTCHA entry...")
+
+    elapsed_ms = 0
+    while elapsed_ms < CAPTCHA_WAIT_TIMEOUT_MS:
+        captcha_value = captcha_input.input_value().strip()
+        if len(captcha_value) == CAPTCHA_TARGET_LENGTH:
+            return True
+
+        page.wait_for_timeout(CAPTCHA_POLL_INTERVAL_MS)
+        elapsed_ms += CAPTCHA_POLL_INTERVAL_MS
+
+    print("Timed out waiting for CAPTCHA target length.")
+    return False
 
 
 def click_submit(page: Page) -> None:
@@ -210,53 +219,23 @@ def click_submit(page: Page) -> None:
 
 
 def login_with_retry(page: Page) -> None:
-    page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
+    page.goto(LOGIN_URL, wait_until="load", timeout=LOGIN_PAGE_LOAD_TIMEOUT_MS)
     page.locator(USERNAME_SELECTOR).first.fill(USERNAME)
     page.locator(PASSWORD_SELECTOR).first.fill(PASSWORD)
 
-    login_success = False
-    for attempt in range(1, CAPTCHA_MAX_ATTEMPTS + 1):
-        print(f"Login attempt {attempt}/{CAPTCHA_MAX_ATTEMPTS}")
+    print("User ID and password entered. Please solve CAPTCHA and click Login manually.")
+    print(f"Waiting up to {MANUAL_LOGIN_WAIT_TIMEOUT_MS // 1000} seconds for successful login...")
 
-        captcha_ready = wait_for_captcha_length(page)
-        if not captcha_ready:
-            raise RuntimeError("CAPTCHA was not entered in configured timeout.")
-
-        click_submit(page)
-
-        try:
-            page.locator(SUCCESS_SELECTOR).first.wait_for(state="visible", timeout=10000)
-            print("Login successful.")
-            login_success = True
-            break
-        except PlaywrightTimeoutError:
-            retry_message_visible = False
-            try:
-                page.get_by_text(CAPTCHA_RETRY_TEXT).first.wait_for(state="visible", timeout=4000)
-                retry_message_visible = True
-            except PlaywrightTimeoutError:
-                retry_message_visible = False
-
-            if retry_message_visible:
-                print("CAPTCHA failed. Waiting for fresh CAPTCHA and then refilling password.")
-                captcha_ready = wait_for_captcha_length(page)
-                if not captcha_ready:
-                    raise RuntimeError("CAPTCHA was not re-entered in configured timeout.")
-                page.locator(PASSWORD_SELECTOR).first.fill(PASSWORD)
-                click_submit(page)
-                try:
-                    page.locator(SUCCESS_SELECTOR).first.wait_for(state="visible", timeout=10000)
-                    print("Login successful.")
-                    login_success = True
-                    break
-                except PlaywrightTimeoutError:
-                    continue
-
-            print("Unable to confirm login success. Check selectors.")
-            break
-
-    if not login_success:
-        raise RuntimeError("Login failed after configured attempts.")
+    try:
+        page.locator(SUCCESS_SELECTOR).first.wait_for(
+            state="visible", timeout=MANUAL_LOGIN_WAIT_TIMEOUT_MS
+        )
+        print("Login successful.")
+    except PlaywrightTimeoutError as exc:
+        raise RuntimeError(
+            f"Login state not detected within {MANUAL_LOGIN_WAIT_TIMEOUT_MS // 1000} seconds. "
+            "Please verify SUCCESS_SELECTOR and try again."
+        ) from exc
 
 
 def click_link_by_id_or_text(page: Page, value: str) -> None:
@@ -835,7 +814,20 @@ def run() -> None:
 
             progress_window.set_status("Updating database...")
             print("\nPushing records to Supabase database...")
-            inserted, updated = upsert_to_database(all_records)
+            max_db_retries = 3
+            for db_attempt in range(1, max_db_retries + 1):
+                try:
+                    inserted, updated = upsert_to_database(all_records)
+                    break
+                except Exception as db_exc:
+                    if db_attempt < max_db_retries:
+                        wait_sec = 5 * db_attempt
+                        print(f"Database connection failed (attempt {db_attempt}/{max_db_retries}): {db_exc}")
+                        print(f"Retrying in {wait_sec} seconds...")
+                        progress_window.set_status(f"DB connection failed, retrying in {wait_sec}s... ({db_attempt}/{max_db_retries})")
+                        time.sleep(wait_sec)
+                    else:
+                        raise
             print(f"\n=== Database Stats ===")
             print(f"New Accounts Inserted: {inserted}")
             print(f"Existing Accounts Updated: {updated}")
